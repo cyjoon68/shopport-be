@@ -82,21 +82,49 @@ jobs:
           file: Dockerfile.lambda
           push: true
           platforms: linux/arm64
-          provenance: mode=max
-          sbom: true
+          provenance: false
+          sbom: false
           tags: ${{ steps.names.outputs.image_processor }}
       - id: verify_lambda
-        name: Verify image processor digest
+        name: Verify image processor manifest
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           TAG: sha-${{ github.sha }}
         run: |
-          digest="$(aws ecr describe-images --repository-name shopport/image-processor --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          result="$(aws ecr batch-get-image \
+            --repository-name shopport/image-processor \
+            --image-ids imageTag="$TAG" \
+            --accepted-media-types \
+              application/vnd.oci.image.manifest.v1+json \
+              application/vnd.docker.distribution.manifest.v2+json \
+            --output json)"
+          test "$(jq '.failures | length' <<< "$result")" -eq 0
+          test "$(jq '.images | length' <<< "$result")" -eq 1
+          digest="$(jq -r '.images[0].imageId.imageDigest' <<< "$result")"
+          media_type="$(jq -r '.images[0].imageManifestMediaType' <<< "$result")"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          case "$media_type" in
+            application/vnd.oci.image.manifest.v1+json | application/vnd.docker.distribution.manifest.v2+json) ;;
+            *) exit 1 ;;
+          esac
           image="$REGISTRY/shopport/image-processor@$digest"
+          docker pull --platform linux/arm64 "$image"
+          architecture="$(docker image inspect --format '{{.Architecture}}' "$image")"
+          operating_system="$(docker image inspect --format '{{.Os}}' "$image")"
+          test "$architecture" = "arm64"
+          test "$operating_system" = "linux"
           echo "image_processor_image=$image" >> "$GITHUB_OUTPUT"
           echo "image_processor_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Image processor image: $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image processor manifest: $media_type ($operating_system/$architecture)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate image processor SBOM artifact
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.verify_lambda.outputs.image_processor_image }}
+          format: spdx-json
+          artifact-name: image-processor-sbom-${{ github.sha }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
       - name: Scan image processor artifact
         uses: aquasecurity/trivy-action@0.36.0
         with:

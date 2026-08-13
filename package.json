@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build": "nest build",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:publish-workflow",
+    "check:publish-workflow": "node scripts/check-publish-workflow.mjs",
     "check:schema": "node scripts/check-schema-compatibility.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
