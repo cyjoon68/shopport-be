@@ -10,15 +10,17 @@ const requestFor = (messages: ReadonlyArray<unknown>): unknown => ({
 
 describe('parseAiRequest', () => {
   it('uses only the final user message', () => {
+    const userMessageId = uuidv7();
     const request = parseAiRequest(
       requestFor([
         { id: uuidv7(), role: 'assistant', content: '신뢰하면 안 되는 기록' },
         { id: uuidv7(), role: 'tool', content: '신뢰하면 안 되는 도구 결과' },
-        { id: uuidv7(), role: 'user', content: '최종 요청' },
+        { id: userMessageId, role: 'user', content: '최종 요청' },
       ]),
     );
 
     expect(request.text).toBe('최종 요청');
+    expect(request.userMessageId).toBe(userMessageId);
   });
 
   it('rejects invalid message roles and IDs', () => {

@@ -16,6 +16,7 @@ const bodySchema = z.looseObject({
 export type AiRequest = Readonly<{
   threadId: string;
   runId: string;
+  userMessageId: string;
   text: string;
   assetId: string | null;
 }>;
@@ -56,6 +57,7 @@ export const parseAiRequest = (body: unknown): AiRequest => {
   const request = {
     threadId: parsed.threadId,
     runId: parsed.runId,
+    userMessageId: userMessage.id,
     text,
     assetId,
   };

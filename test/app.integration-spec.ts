@@ -36,6 +36,42 @@ const searchSchema = z.object({
   }),
 });
 
+const streamChunkSchema = z.union([
+  z.object({
+    type: z.string(),
+    messageId: z.uuid().optional(),
+  }),
+  z
+    .object({
+      chunk: z.object({
+        type: z.string(),
+        messageId: z.uuid().optional(),
+      }),
+    })
+    .transform(({ chunk }) => chunk),
+]);
+
+const historySchema = z.object({
+  data: z.object({
+    conversation: z.object({
+      messages: z.array(
+        z.object({
+          id: z.uuid(),
+          role: z.enum(['USER', 'ASSISTANT']),
+        }),
+      ),
+    }),
+  }),
+});
+
+const parseStreamChunks = (
+  body: string,
+): ReadonlyArray<z.infer<typeof streamChunkSchema>> =>
+  body
+    .trim()
+    .split('\n')
+    .map((line) => streamChunkSchema.parse(JSON.parse(line)));
+
 describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
@@ -150,18 +186,24 @@ describe('Shopport API vertical flow', () => {
       .createConversation.conversation.id;
 
     completedRunId = uuidv7();
+    const userMessageId = uuidv7();
     const chatResponse = await request(baseUrl)
       .post('/v1/ai/chat')
       .set('authorization', `Bearer ${accessToken}`)
       .send({
         threadId: conversationId,
         runId: completedRunId,
-        messages: [{ id: uuidv7(), role: 'user', content: '텀블러' }],
+        messages: [{ id: userMessageId, role: 'user', content: '텀블러' }],
         forwardedProps: {},
       })
       .expect(200);
     expect(chatResponse.text).toContain('TOOL_CALL_RESULT');
     expect(chatResponse.text).toContain('RUN_FINISHED');
+    const assistantMessageId = parseStreamChunks(chatResponse.text).find(
+      ({ type }) => type === 'TEXT_MESSAGE_START',
+    )?.messageId;
+    expect(assistantMessageId).toBeDefined();
+    if (!assistantMessageId) throw new Error('Expected assistant message ID');
 
     const replay = await request(baseUrl)
       .get(`/v1/ai/chat?runId=${completedRunId}&offset=0-0`)
@@ -196,19 +238,34 @@ describe('Shopport API vertical flow', () => {
         expect(text).toContain('"isSaved":true');
       });
 
-    await request(baseUrl)
+    const historyResponse = await request(baseUrl)
       .post('/graphql')
       .set('authorization', `Bearer ${accessToken}`)
       .send({
         query:
-          'query Conversation($id: UUID!) { conversation(id: $id) { id messages { role status parts { __typename ... on TextMessagePart { text } ... on ProductReferenceMessagePart { product { id } } } } } }',
+          'query Conversation($id: UUID!) { conversation(id: $id) { id messages { id role status parts { __typename ... on TextMessagePart { text } ... on ProductReferenceMessagePart { product { id } } } } } }',
         variables: { id: conversationId },
       })
-      .expect(200)
-      .expect(({ text }) => {
-        expect(text).toContain('조건에 맞는 상품');
-        expect(text).toContain(product.id);
-      });
+      .expect(200);
+    expect(historyResponse.text).toContain('조건에 맞는 상품');
+    expect(historyResponse.text).toContain(product.id);
+    const history = historySchema.parse(historyResponse.body).data.conversation
+      .messages;
+    expect(history).toEqual([
+      expect.objectContaining({ id: userMessageId, role: 'USER' }),
+      expect.objectContaining({ id: assistantMessageId, role: 'ASSISTANT' }),
+    ]);
+
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({
+        threadId: conversationId,
+        runId: uuidv7(),
+        messages: [{ id: userMessageId, role: 'user', content: '중복 요청' }],
+        forwardedProps: {},
+      })
+      .expect(409);
   }, 30_000);
 
   it('hides cross-account replay and cancel, then cancels idempotently', async () => {

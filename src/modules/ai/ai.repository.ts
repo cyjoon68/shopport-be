@@ -1,4 +1,9 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { and, eq, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
@@ -20,6 +25,7 @@ type BeginRunInput = Readonly<{
   accountId: string;
   conversationId: string;
   runId: string;
+  userMessageId: string;
   text: string;
   assetId: string | null;
 }>;
@@ -42,6 +48,17 @@ export class AiRepository {
     this.database.transaction(async (transaction) => {
       const now = new Date();
       const usageDate = getKstUsageDate(now);
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.userMessageId}))`,
+      );
+      const existingMessages = await transaction
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.id, input.userMessageId))
+        .limit(1);
+      if (existingMessages.length > 0) {
+        throw new ConflictException('Message already exists');
+      }
       const inserted = await transaction
         .insert(aiRuns)
         .values({
@@ -142,9 +159,8 @@ export class AiRepository {
           ),
         );
 
-      const messageId = uuidv7();
       await transaction.insert(messages).values({
-        id: messageId,
+        id: input.userMessageId,
         conversationId: input.conversationId,
         role: 'user',
         runId: input.runId,
@@ -155,7 +171,7 @@ export class AiRepository {
       if (input.text.length > 0) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.userMessageId,
           kind: 'text',
           position: parts.length,
           payload: { text: input.text },
@@ -164,7 +180,7 @@ export class AiRepository {
       if (input.assetId) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.userMessageId,
           kind: 'image',
           position: parts.length,
           payload: {
@@ -185,6 +201,7 @@ export class AiRepository {
   public completeRun = (
     runId: string,
     conversationId: string,
+    messageId: string,
     text: string,
     productIds: ReadonlyArray<string>,
   ): Promise<void> =>
@@ -195,7 +212,6 @@ export class AiRepository {
         .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
         .returning({ id: aiRuns.id });
       if (updated.length === 0) return;
-      const messageId = uuidv7();
       await transaction.insert(messages).values({
         id: messageId,
         conversationId,
