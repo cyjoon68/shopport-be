@@ -1,6 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl as getCloudFrontSignedUrl } from '@aws-sdk/cloudfront-signer';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v7 as uuidv7 } from 'uuid';
@@ -13,6 +17,7 @@ const localCredentials = {
   accessKeyId: 'test',
   secretAccessKey: 'test',
 };
+const maxAiImageBytes = 10 * 1024 * 1024;
 
 export type AssetGraphql = Readonly<{
   id: string;
@@ -33,13 +38,16 @@ export type AssetUploadGraphql = Readonly<{
 export class AssetsService {
   readonly #s3: S3Client;
   readonly #rawBucket: string;
+  readonly #normalizedBucket: string;
 
   public constructor(
     private readonly repository: AssetsRepository,
     private readonly config: ConfigService<Environment, true>,
   ) {
     const endpoint = config.get('AWS_ENDPOINT_URL', { infer: true });
-    this.#rawBucket = storageBucketsFromConfig(config).raw;
+    const buckets = storageBucketsFromConfig(config);
+    this.#rawBucket = buckets.raw;
+    this.#normalizedBucket = buckets.normalized;
     this.#s3 = new S3Client({
       region: config.get('AWS_REGION', { infer: true }),
       ...(endpoint
@@ -92,6 +100,31 @@ export class AssetsService {
 
   public delete = (accountId: string, id: string): Promise<boolean> =>
     this.repository.delete(accountId, id);
+
+  public readNormalizedImage = async (
+    accountId: string,
+    id: string,
+  ): Promise<Readonly<{ base64: string; mimeType: 'image/jpeg' }>> => {
+    const asset = await this.repository.findOwned(accountId, id);
+    if (asset?.status !== 'ready' || !asset.normalizedKey) {
+      throw new NotFoundException('Ready image asset not found');
+    }
+    const object = await this.#s3.send(
+      new GetObjectCommand({
+        Bucket: this.#normalizedBucket,
+        Key: asset.normalizedKey,
+      }),
+    );
+    if (!object.Body) throw new Error('Normalized image has no body');
+    const bytes = await object.Body.transformToByteArray();
+    if (bytes.byteLength > maxAiImageBytes) {
+      throw new Error('Normalized image exceeds AI provider limit');
+    }
+    return {
+      base64: Buffer.from(bytes).toString('base64'),
+      mimeType: 'image/jpeg',
+    };
+  };
 
   private readonly toGraphql = (asset: AssetRecord): AssetGraphql => ({
     id: asset.id,

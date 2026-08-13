@@ -1,7 +1,6 @@
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { StreamChunk } from '@tanstack/ai';
-import { v7 as uuidv7 } from 'uuid';
-import { toProductGraphql } from '../catalog/catalog.mapper.js';
+import { AssetsService } from '../assets/assets.service.js';
 import { AiRepository } from './ai.repository.js';
 import { parseAiRequest } from './ai-request.js';
 import { RedisRunCancellation } from './redis-run-cancellation.js';
@@ -14,6 +13,7 @@ export class AiService {
   public constructor(
     private readonly repository: AiRepository,
     private readonly tools: AiTools,
+    private readonly assets: AssetsService,
     private readonly cancellation: RedisRunCancellation,
     @Inject(AI_STREAM_ADAPTER) private readonly stream: AiStreamAdapter,
   ) {}
@@ -33,45 +33,37 @@ export class AiService {
     });
     if (!began) throw new ConflictException('Run already exists');
     await this.repository.heartbeatRun(request.runId);
-    let result;
     try {
       const tools = this.tools.createSession();
-      result = await this.withTimeout(
-        tools.searchProducts(request.text),
-        60_000,
+      const image =
+        request.assetId && this.stream.requiresImageData
+          ? await this.assets.readNormalizedImage(accountId, request.assetId)
+          : null;
+      return this.stream.createStream(
+        {
+          threadId: request.threadId,
+          runId: request.runId,
+          text: request.text,
+          image,
+        },
+        tools,
+        {
+          onComplete: (result) =>
+            this.repository.completeRun(
+              request.runId,
+              request.threadId,
+              result.messageId,
+              result.text,
+              result.productIds,
+            ),
+          onFailure: () => this.repository.failRun(request.runId),
+          isCancelled: () => this.cancellation.isCancelled(request.runId),
+        },
       );
     } catch (error) {
       await this.repository.failRun(request.runId);
       throw error;
     }
-    await this.repository.heartbeatRun(request.runId);
-    const products = result.items.map((product) => toProductGraphql(product));
-    const answer =
-      products.length > 0
-        ? '조건에 맞는 상품을 가격과 배송 기준으로 정리했어요. 카드를 눌러 상세 조건을 확인해 보세요.'
-        : '조건에 맞는 상품을 찾지 못했어요. 용도나 예산을 조금 더 알려주세요.';
-    const assistantMessageId = uuidv7();
-    return this.stream.createStream(
-      {
-        threadId: request.threadId,
-        runId: request.runId,
-        messageId: assistantMessageId,
-        message: answer,
-        products,
-      },
-      {
-        onComplete: () =>
-          this.repository.completeRun(
-            request.runId,
-            request.threadId,
-            assistantMessageId,
-            answer,
-            result.items.map(({ id }) => id),
-          ),
-        onFailure: () => this.repository.failRun(request.runId),
-        isCancelled: () => this.cancellation.isCancelled(request.runId),
-      },
-    );
   };
 
   public assertOwnedRun = (
@@ -92,22 +84,5 @@ export class AiService {
       runId,
     );
     if (result !== 'terminal') await this.cancellation.mark(runId);
-  };
-
-  private readonly withTimeout = async <Value>(
-    operation: Promise<Value>,
-    milliseconds: number,
-  ): Promise<Value> => {
-    let timeout: NodeJS.Timeout | undefined;
-    const expired = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => {
-        reject(new Error('AI turn timed out'));
-      }, milliseconds);
-    });
-    try {
-      return await Promise.race([operation, expired]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
-    }
   };
 }
