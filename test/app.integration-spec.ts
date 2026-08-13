@@ -17,7 +17,6 @@ import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';
 import { StaleRunRecovery } from '../src/worker/stale-run-recovery.js';
-import { WorkerModule } from '../src/worker/worker.module.js';
 
 const storedObjects = new Map<string, Buffer>();
 const objectPutCalls: Array<readonly [StorageBucket, string]> = [];
@@ -123,16 +122,23 @@ describe('Shopport API vertical flow', () => {
   let archiveWriter: ArchiveWriter;
   let archiveReader: ArchiveReader;
   let outboxProcessor: OutboxProcessor;
+  let postgresStarted = false;
+  let redisStarted = false;
+  let poolInitialized = false;
+  let workerModuleInitialized = false;
+  let appInitialized = false;
 
   beforeAll(async () => {
-    [postgres, redis] = await Promise.all([
-      new PostgreSqlContainer('postgres:17-alpine')
-        .withDatabase('shopport')
-        .withUsername('shopport')
-        .withPassword('shopport')
-        .start(),
-      new GenericContainer('redis:7.4-alpine').withExposedPorts(6379).start(),
-    ]);
+    postgres = await new PostgreSqlContainer('postgres:17-alpine')
+      .withDatabase('shopport')
+      .withUsername('shopport')
+      .withPassword('shopport')
+      .start();
+    postgresStarted = true;
+    redis = await new GenericContainer('redis:7.4-alpine')
+      .withExposedPorts(6379)
+      .start();
+    redisStarted = true;
     process.env.NODE_ENV = 'test';
     process.env.APP_ENV = 'dev';
     process.env.DATABASE_URL = postgres.getConnectionUri();
@@ -147,14 +153,17 @@ describe('Shopport API vertical flow', () => {
     process.env.NORMALIZED_ASSET_BUCKET = 'integration-normalized';
     process.env.ARCHIVE_BUCKET = 'integration-archive';
     pool = new Pool({ connectionString: postgres.getConnectionUri() });
+    poolInitialized = true;
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
+    const { WorkerModule } = await import('../src/worker/worker.module.js');
     workerModule = await Test.createTestingModule({
       imports: [WorkerModule],
     })
       .overrideProvider(ObjectStore)
       .useValue(objectStore)
       .compile();
+    workerModuleInitialized = true;
     staleRunRecovery = workerModule.get(StaleRunRecovery);
     archiveWriter = workerModule.get(ArchiveWriter);
     archiveReader = workerModule.get(ArchiveReader);
@@ -164,15 +173,17 @@ describe('Shopport API vertical flow', () => {
       imports: [AppModule],
     }).compile();
     app = module.createNestApplication();
+    appInitialized = true;
     await app.listen(0, '127.0.0.1');
     baseUrl = await app.getUrl();
   }, 120_000);
 
   afterAll(async () => {
-    await app.close();
-    await workerModule.close();
-    await pool.end();
-    await Promise.all([postgres.stop(), redis.stop()]);
+    if (appInitialized) await app.close();
+    if (workerModuleInitialized) await workerModule.close();
+    if (poolInitialized) await pool.end();
+    if (postgresStarted) await postgres.stop();
+    if (redisStarted) await redis.stop();
   });
 
   it('applies additive migrations idempotently', async () => {
