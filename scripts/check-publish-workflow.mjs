@@ -32,6 +32,9 @@ const lambdaSbom = section(
 const lambdaScan = workflow.slice(
   workflow.indexOf('name: Scan image processor artifact'),
 );
+const trivyActions = workflow.match(
+  /uses: aquasecurity\/trivy-action@v0\.36\.0/gu,
+);
 
 assert.match(mainBuild, /platforms: linux\/arm64/);
 assert.match(mainBuild, /provenance: mode=max/);
@@ -61,6 +64,12 @@ assert.match(
   /artifact-name: image-processor-sbom-\$\{\{ github\.sha \}\}\.spdx\.json/,
 );
 assert.match(lambdaSbom, /upload-artifact: true/);
+assert.equal(
+  trivyActions?.length,
+  2,
+  'Both image scans must use an existing v-prefixed Trivy action release',
+);
+assert.doesNotMatch(workflow, /aquasecurity\/trivy-action@0\.36\.0/u);
 assert.match(
   lambdaScan,
   /image-ref: \$\{\{ steps\.verify_lambda\.outputs\.image_processor_image \}\}/,
