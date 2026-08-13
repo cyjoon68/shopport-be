@@ -50,7 +50,7 @@ import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
       useFactory: (config: ConfigService<Environment, true>) => ({
         pinoHttp: {
           level:
-            config.get('NODE_ENV', { infer: true }) === 'production'
+            config.get('APP_ENV', { infer: true }) === 'prod'
               ? 'info'
               : 'debug',
           autoLogging: false,
@@ -83,8 +83,7 @@ import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
       useFactory: (
         config: ConfigService<Environment, true>,
       ): ApolloDriverConfig => {
-        const production =
-          config.get('NODE_ENV', { infer: true }) === 'production';
+        const production = config.get('APP_ENV', { infer: true }) === 'prod';
         return {
           driver: ApolloDriver,
           typePaths: ['./schema.graphql'],

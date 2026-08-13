@@ -24,11 +24,11 @@ export class ProviderTokenVerifier {
     private readonly config: ConfigService<Environment, true>,
   ) {}
 
-  public async verify(
+  public verify = async (
     provider: AuthProvider,
     idToken: string,
     nonce: string,
-  ): Promise<VerifiedIdentity> {
+  ): Promise<VerifiedIdentity> => {
     if (
       this.config.get('ALLOW_DEMO_AUTH', { infer: true }) &&
       idToken === 'demo'
@@ -42,9 +42,16 @@ export class ProviderTokenVerifier {
       };
     }
 
+    const appleAudiences = this.config
+      .get('APPLE_AUDIENCES', { infer: true })
+      .split(',')
+      .map((audience) => audience.trim())
+      .filter((audience) => audience.length > 0);
     const expectedAudience =
       provider === 'apple'
-        ? this.config.get('APPLE_CLIENT_ID', { infer: true })
+        ? appleAudiences.length > 0
+          ? appleAudiences
+          : this.config.get('APPLE_CLIENT_ID', { infer: true })
         : this.config.get('KAKAO_NATIVE_APP_KEY', { infer: true });
     const issuer =
       provider === 'apple'
@@ -73,5 +80,5 @@ export class ProviderTokenVerifier {
       profileImageUrl:
         typeof payload.picture === 'string' ? payload.picture : null,
     };
-  }
+  };
 }

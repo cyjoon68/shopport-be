@@ -8,6 +8,20 @@
       "when": 1786545232261,
       "tag": "0000_shopport_v1",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786597490995,
+      "tag": "0001_security_runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786597527112,
+      "tag": "0002_cancelled_run_status",
+      "breakpoints": true
     }
   ]
 }

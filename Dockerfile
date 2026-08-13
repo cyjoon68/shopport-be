@@ -26,6 +26,7 @@ RUN pnpm install --prod --frozen-lockfile
 
 FROM node:22.23.2-bookworm-slim AS runtime
 ENV NODE_ENV=production
+ENV APP_ENV=prod
 WORKDIR /app
 RUN apt-get update \
     && apt-get upgrade --no-install-recommends -y \

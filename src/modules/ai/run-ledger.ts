@@ -1,4 +1,4 @@
-type RunStatus = 'reserved' | 'completed' | 'failed';
+type RunStatus = 'reserved' | 'completed' | 'failed' | 'cancelled';
 
 export class RunLedger {
   readonly #runs = new Map<string, RunStatus>();
@@ -16,6 +16,12 @@ export class RunLedger {
 
   public fail = (runId: string): void => {
     if (this.#runs.get(runId) === 'reserved') this.#runs.set(runId, 'failed');
+  };
+
+  public cancel = (runId: string): void => {
+    if (this.#runs.get(runId) === 'reserved') {
+      this.#runs.set(runId, 'cancelled');
+    }
   };
 
   public status = (runId: string): RunStatus | null =>

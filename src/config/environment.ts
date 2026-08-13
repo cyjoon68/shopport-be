@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const environmentSchema = z
   .object({
+    APP_ENV: z.enum(['dev', 'staging', 'prod']).default('dev'),
     NODE_ENV: z
       .enum(['development', 'test', 'production'])
       .default('development'),
@@ -21,24 +22,31 @@ const environmentSchema = z
     JWT_ISSUER: z.string().default('shopport'),
     JWT_AUDIENCE: z.string().default('shopport-mobile'),
     APPLE_CLIENT_ID: z.string().default('com.shopport.mobile'),
+    APPLE_AUDIENCES: z.string().default(''),
     KAKAO_NATIVE_APP_KEY: z.string().default('local-kakao-key'),
     REVENUECAT_WEBHOOK_SECRET: z.string().default('local-revenuecat-secret'),
+    AI_MODE: z.enum(['fake', 'approved']).default('fake'),
     CATALOG_MODE: z.enum(['fake', 'approved']).default('fake'),
     ALLOW_DEMO_AUTH: z.stringbool().default(true),
-    PERSISTED_OPERATION_HASHES: z.string().default(''),
+    PERSISTED_OPERATION_MANIFEST: z.string().default(''),
   })
   .superRefine((environment, context) => {
-    if (
-      environment.NODE_ENV === 'production' &&
-      environment.CATALOG_MODE === 'fake'
-    ) {
+    const production = environment.APP_ENV === 'prod';
+    if (production && environment.CATALOG_MODE === 'fake') {
       context.addIssue({
         code: 'custom',
         message: 'Production requires at least one approved catalog provider',
         path: ['CATALOG_MODE'],
       });
     }
-    if (environment.NODE_ENV === 'production' && environment.ALLOW_DEMO_AUTH) {
+    if (production && environment.AI_MODE === 'fake') {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production requires an approved AI provider',
+        path: ['AI_MODE'],
+      });
+    }
+    if (production && environment.ALLOW_DEMO_AUTH) {
       context.addIssue({
         code: 'custom',
         message: 'Demo authentication must be disabled in production',
@@ -46,17 +54,41 @@ const environmentSchema = z
       });
     }
     if (
-      environment.NODE_ENV === 'production' &&
-      environment.PERSISTED_OPERATION_HASHES.trim().length === 0
+      production &&
+      environment.PERSISTED_OPERATION_MANIFEST.trim().length === 0
     ) {
       context.addIssue({
         code: 'custom',
         message: 'Production requires a persisted GraphQL operation allowlist',
-        path: ['PERSISTED_OPERATION_HASHES'],
+        path: ['PERSISTED_OPERATION_MANIFEST'],
       });
     }
+    if (environment.PERSISTED_OPERATION_MANIFEST.trim().length > 0) {
+      try {
+        const manifest: unknown = JSON.parse(
+          environment.PERSISTED_OPERATION_MANIFEST,
+        );
+        const valid =
+          typeof manifest === 'object' &&
+          manifest !== null &&
+          !Array.isArray(manifest) &&
+          Object.values(manifest).every(
+            (hash) => typeof hash === 'string' && /^[a-f\d]{64}$/u.test(hash),
+          );
+        if (!valid || (production && Object.keys(manifest).length === 0)) {
+          throw new Error('Invalid manifest');
+        }
+      } catch {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'Persisted operation manifest must map IDs to SHA-256 hashes',
+          path: ['PERSISTED_OPERATION_MANIFEST'],
+        });
+      }
+    }
     if (
-      environment.NODE_ENV === 'production' &&
+      production &&
       (!environment.CLOUDFRONT_KEY_PAIR_ID ||
         !environment.CLOUDFRONT_PRIVATE_KEY)
     ) {
@@ -65,6 +97,30 @@ const environmentSchema = z
         message: 'Production requires CloudFront signing credentials',
         path: ['CLOUDFRONT_KEY_PAIR_ID'],
       });
+    }
+    if (production && environment.APPLE_AUDIENCES.trim().length === 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production requires Apple audiences',
+        path: ['APPLE_AUDIENCES'],
+      });
+    }
+    const unsafeSecrets = [
+      ['JWT_SECRET', environment.JWT_SECRET],
+      ['KAKAO_NATIVE_APP_KEY', environment.KAKAO_NATIVE_APP_KEY],
+      ['REVENUECAT_WEBHOOK_SECRET', environment.REVENUECAT_WEBHOOK_SECRET],
+    ] as const;
+    for (const [path, value] of unsafeSecrets) {
+      if (
+        production &&
+        /(?:local|development|replace|example|changeme)/iu.test(value)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Production secrets must not use local placeholder values',
+          path: [path],
+        });
+      }
     }
   });
 

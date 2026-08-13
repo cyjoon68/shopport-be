@@ -43,7 +43,9 @@ describe('Shopport API vertical flow', () => {
   let accessToken: string;
   let refreshToken: string;
   let conversationId: string;
+  let completedRunId: string;
   let baseUrl: string;
+  let pool: Pool;
 
   beforeAll(async () => {
     [postgres, redis] = await Promise.all([
@@ -55,15 +57,17 @@ describe('Shopport API vertical flow', () => {
       new GenericContainer('redis:7.4-alpine').withExposedPorts(6379).start(),
     ]);
     process.env.NODE_ENV = 'test';
+    process.env.APP_ENV = 'dev';
     process.env.DATABASE_URL = postgres.getConnectionUri();
     process.env.REDIS_URL = `redis://${redis.getHost()}:${String(redis.getMappedPort(6379))}`;
     process.env.JWT_SECRET = 'integration-test-secret-at-least-32-bytes';
     process.env.ALLOW_DEMO_AUTH = 'true';
+    process.env.AI_MODE = 'fake';
     process.env.CATALOG_MODE = 'fake';
-    const pool = new Pool({ connectionString: postgres.getConnectionUri() });
+    process.env.PERSISTED_OPERATION_MANIFEST = '';
+    pool = new Pool({ connectionString: postgres.getConnectionUri() });
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
-    await pool.end();
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({
       imports: [AppModule],
@@ -75,7 +79,53 @@ describe('Shopport API vertical flow', () => {
 
   afterAll(async () => {
     await app.close();
+    await pool.end();
     await Promise.all([postgres.stop(), redis.stop()]);
+  });
+
+  it('applies additive migrations idempotently', async () => {
+    const columns = await pool.query<{ column_name: string }>(
+      `select column_name
+       from information_schema.columns
+       where table_name = 'ai_runs'
+         and column_name in ('deadline_at', 'heartbeat_at')`,
+    );
+    const constraint = await pool.query<{ definition: string }>(
+      `select pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname = 'ai_runs_status_check'`,
+    );
+
+    expect(columns.rows).toHaveLength(2);
+    expect(constraint.rows.at(0)?.definition).toContain('cancelled');
+  });
+
+  it('creates one identity and account under concurrent first login', async () => {
+    const responses = await Promise.all([
+      request(baseUrl).post('/v1/auth/apple').send({
+        identityToken: 'demo',
+        nonce: 'concurrent-login-a',
+        displayName: '동시 가입 사용자',
+      }),
+      request(baseUrl).post('/v1/auth/apple').send({
+        identityToken: 'demo',
+        nonce: 'concurrent-login-b',
+        displayName: '동시 가입 사용자',
+      }),
+    ]);
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+    const result = await pool.query<{ count: string; display_name: string }>(
+      `select count(*) over () as count, a.display_name
+       from auth_identities i
+       join accounts a on a.id = i.account_id
+       where i.provider = 'apple' and i.provider_subject = 'demo-apple'`,
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows.at(0)).toMatchObject({
+      count: '1',
+      display_name: '동시 가입 사용자',
+    });
   });
 
   it('logs in, chats, replays, saves a product, and reads history', async () => {
@@ -99,13 +149,13 @@ describe('Shopport API vertical flow', () => {
     conversationId = conversationSchema.parse(conversationResponse.body).data
       .createConversation.conversation.id;
 
-    const runId = uuidv7();
+    completedRunId = uuidv7();
     const chatResponse = await request(baseUrl)
       .post('/v1/ai/chat')
       .set('authorization', `Bearer ${accessToken}`)
       .send({
         threadId: conversationId,
-        runId,
+        runId: completedRunId,
         messages: [{ id: uuidv7(), role: 'user', content: '텀블러' }],
         forwardedProps: {},
       })
@@ -114,7 +164,7 @@ describe('Shopport API vertical flow', () => {
     expect(chatResponse.text).toContain('RUN_FINISHED');
 
     const replay = await request(baseUrl)
-      .get(`/v1/ai/chat?runId=${runId}&offset=0-0`)
+      .get(`/v1/ai/chat?runId=${completedRunId}&offset=0-0`)
       .set('authorization', `Bearer ${accessToken}`)
       .expect(200);
     expect(replay.text).toContain('RUN_FINISHED');
@@ -159,6 +209,133 @@ describe('Shopport API vertical flow', () => {
         expect(text).toContain('조건에 맞는 상품');
         expect(text).toContain(product.id);
       });
+  }, 30_000);
+
+  it('hides cross-account replay and cancel, then cancels idempotently', async () => {
+    const secondLoginResponse = await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({ identityToken: 'demo', nonce: 'second-account' })
+      .expect(200);
+    const secondLogin = loginSchema.parse(secondLoginResponse.body);
+
+    await request(baseUrl)
+      .get(`/v1/ai/chat?runId=${completedRunId}&offset=0-0`)
+      .set('authorization', `Bearer ${secondLogin.accessToken}`)
+      .expect(404);
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${secondLogin.accessToken}`)
+      .set('last-event-id', '0-0')
+      .send({
+        threadId: conversationId,
+        runId: completedRunId,
+        messages: [{ id: uuidv7(), role: 'user', content: 'resume' }],
+        forwardedProps: {},
+      })
+      .expect(404);
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${secondLogin.accessToken}`)
+      .send({ threadId: conversationId, runId: completedRunId })
+      .expect(404);
+
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'apple' and provider_subject = 'demo-apple'`,
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected Apple account');
+    const usage = await pool.query<{ usage_date: string; text_count: number }>(
+      `select usage_date::text, text_count
+       from daily_usage
+       where account_id = $1`,
+      [accountId],
+    );
+    const before = usage.rows.at(0);
+    if (!before) throw new Error('Expected daily usage');
+    const reservedRunId = uuidv7();
+    const now = new Date();
+    await pool.query(
+      `update daily_usage
+       set text_count = text_count + 1
+       where account_id = $1 and usage_date = $2`,
+      [accountId, before.usage_date],
+    );
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, usage_date, usage_kind, status,
+        started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, $4, 'text', 'reserved', $5, $6, $5)`,
+      [
+        reservedRunId,
+        accountId,
+        conversationId,
+        before.usage_date,
+        now,
+        new Date(now.getTime() + 60_000),
+      ],
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await request(baseUrl)
+        .post('/v1/ai/chat/cancel')
+        .set('authorization', `Bearer ${accessToken}`)
+        .send({ threadId: conversationId, runId: reservedRunId })
+        .expect(204);
+    }
+    const cancelled = await pool.query<{
+      status: string;
+      text_count: number;
+      assistant_count: number;
+    }>(
+      `select r.status, u.text_count,
+              count(m.id) filter (where m.role = 'assistant')::int as assistant_count
+       from ai_runs r
+       join daily_usage u
+         on u.account_id = r.account_id and u.usage_date = r.usage_date
+       left join messages m on m.run_id = r.id
+       where r.id = $1
+       group by r.status, u.text_count`,
+      [reservedRunId],
+    );
+
+    expect(cancelled.rows.at(0)).toEqual({
+      status: 'cancelled',
+      text_count: before.text_count,
+      assistant_count: 0,
+    });
+
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({ threadId: conversationId, runId: completedRunId })
+      .expect(204);
+
+    const refreshResponses = await Promise.all([
+      request(baseUrl)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: secondLogin.refreshToken }),
+      request(baseUrl)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: secondLogin.refreshToken }),
+    ]);
+    expect(refreshResponses.map(({ status }) => status).sort()).toEqual([
+      200, 401,
+    ]);
+    await request(baseUrl)
+      .post('/v1/auth/refresh')
+      .send({ refreshToken: secondLogin.refreshToken })
+      .expect(401);
+    const successors = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+       from auth_sessions parent
+       join auth_sessions child on child.id = parent.replaced_by_session_id
+       join auth_identities identity on identity.account_id = parent.account_id
+       where identity.provider = 'kakao'
+         and identity.provider_subject = 'demo-kakao'`,
+    );
+    expect(successors.rows.at(0)?.count).toBe('1');
   }, 30_000);
 
   it('revokes the access session on logout', async () => {

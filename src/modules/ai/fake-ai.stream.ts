@@ -71,6 +71,7 @@ export const createFakeAiStream = (
   input: FakeStreamInput,
   onComplete: () => Promise<void>,
   onFailure: () => Promise<void>,
+  isCancelled: () => Promise<boolean>,
 ): AsyncIterable<StreamChunk> => {
   const chunks = chunksFor(input);
   let index = 0;
@@ -80,6 +81,10 @@ export const createFakeAiStream = (
       next: async (): Promise<IteratorResult<StreamChunk>> => {
         try {
           if (index >= chunks.length) return { done: true, value: undefined };
+          if (await isCancelled()) {
+            terminalized = true;
+            return { done: true, value: undefined };
+          }
           if (index === chunks.length - 1 && !terminalized) {
             await onComplete();
             terminalized = true;

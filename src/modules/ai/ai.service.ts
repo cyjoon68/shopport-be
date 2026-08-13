@@ -4,6 +4,7 @@ import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { AiRepository } from './ai.repository.js';
 import { parseAiRequest } from './ai-request.js';
 import { createFakeAiStream } from './fake-ai.stream.js';
+import { RedisRunCancellation } from './redis-run-cancellation.js';
 import { AiTools } from './ai-tools.js';
 
 @Injectable()
@@ -11,12 +12,13 @@ export class AiService {
   public constructor(
     private readonly repository: AiRepository,
     private readonly tools: AiTools,
+    private readonly cancellation: RedisRunCancellation,
   ) {}
 
-  public async start(
+  public start = async (
     accountId: string,
     body: unknown,
-  ): Promise<AsyncIterable<StreamChunk>> {
+  ): Promise<AsyncIterable<StreamChunk>> => {
     const request = parseAiRequest(body);
     const began = await this.repository.beginRun({
       accountId,
@@ -26,6 +28,7 @@ export class AiService {
       assetId: request.assetId,
     });
     if (!began) throw new ConflictException('Run already exists');
+    await this.repository.heartbeatRun(request.runId);
     let result;
     try {
       const tools = this.tools.createSession();
@@ -37,6 +40,7 @@ export class AiService {
       await this.repository.failRun(request.runId);
       throw error;
     }
+    await this.repository.heartbeatRun(request.runId);
     const products = result.items.map((product) => toProductGraphql(product));
     const answer =
       products.length > 0
@@ -57,8 +61,29 @@ export class AiService {
           result.items.map(({ id }) => id),
         ),
       () => this.repository.failRun(request.runId),
+      () => this.cancellation.isCancelled(request.runId),
     );
-  }
+  };
+
+  public assertOwnedRun = (
+    accountId: string,
+    runId: string,
+    conversationId?: string,
+  ): Promise<void> =>
+    this.repository.assertOwnedRun(accountId, runId, conversationId);
+
+  public cancel = async (
+    accountId: string,
+    conversationId: string,
+    runId: string,
+  ): Promise<void> => {
+    const result = await this.repository.cancelRun(
+      accountId,
+      conversationId,
+      runId,
+    );
+    if (result !== 'terminal') await this.cancellation.mark(runId);
+  };
 
   private readonly withTimeout = async <Value>(
     operation: Promise<Value>,

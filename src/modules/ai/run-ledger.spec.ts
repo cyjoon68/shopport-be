@@ -17,4 +17,14 @@ describe('RunLedger', () => {
     ledger.fail('run-2');
     expect(ledger.status('run-2')).toBe('failed');
   });
+
+  it('cancels a reserved run idempotently', () => {
+    const ledger = new RunLedger();
+
+    ledger.begin('run-3');
+    ledger.cancel('run-3');
+    ledger.cancel('run-3');
+
+    expect(ledger.status('run-3')).toBe('cancelled');
+  });
 });
