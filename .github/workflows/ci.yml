@@ -30,8 +30,12 @@ jobs:
       - name: Check GraphQL compatibility
         if: github.event_name == 'pull_request'
         run: |
-          git show origin/${{ github.base_ref }}:schema.graphql > /tmp/shopport-base-schema.graphql
-          pnpm check:schema /tmp/shopport-base-schema.graphql schema.graphql
+          if git cat-file -e "origin/${{ github.base_ref }}:schema.graphql" 2>/dev/null; then
+            git show origin/${{ github.base_ref }}:schema.graphql > /tmp/shopport-base-schema.graphql
+            pnpm check:schema /tmp/shopport-base-schema.graphql schema.graphql
+          else
+            echo "No baseline GraphQL schema on origin/${{ github.base_ref }}; compatibility check skipped for initial schema."
+          fi
       - run: pnpm audit --audit-level=high
 
   container:
@@ -44,7 +48,7 @@ jobs:
           context: .
           load: true
           tags: shopport-be:${{ github.sha }}
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: shopport-be:${{ github.sha }}
           format: table
