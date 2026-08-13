@@ -12,6 +12,13 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'non-production' }}
+    outputs:
+      api_image: ${{ steps.verify_main.outputs.api_image }}
+      api_digest: ${{ steps.verify_main.outputs.main_digest }}
+      worker_image: ${{ steps.verify_main.outputs.worker_image }}
+      worker_digest: ${{ steps.verify_main.outputs.main_digest }}
+      image_processor_image: ${{ steps.verify_lambda.outputs.image_processor_image }}
+      image_processor_digest: ${{ steps.verify_lambda.outputs.image_processor_digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -21,20 +28,85 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-buildx-action@v3
-      - name: Build and push API/worker image
+      - id: names
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          echo "api=$REGISTRY/shopport/api:$TAG" >> "$GITHUB_OUTPUT"
+          echo "worker=$REGISTRY/shopport/worker:$TAG" >> "$GITHUB_OUTPUT"
+          echo "image_processor=$REGISTRY/shopport/image-processor:$TAG" >> "$GITHUB_OUTPUT"
+      - name: Build main runtime artifact
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          provenance: mode=max
-          sbom: true
-          tags: ${{ steps.ecr.outputs.registry }}/shopport-api:sha-${{ github.sha }}
-      - name: Build and push image processor
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ steps.names.outputs.api }}
+            ${{ steps.names.outputs.worker }}
+      - name: Scan main runtime artifact
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.names.outputs.api }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Push main runtime artifact
+        run: |
+          docker push "${{ steps.names.outputs.api }}"
+          docker push "${{ steps.names.outputs.worker }}"
+      - id: verify_main
+        name: Verify main runtime digests
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          api_digest="$(aws ecr describe-images --repository-name shopport/api --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          worker_digest="$(aws ecr describe-images --repository-name shopport/worker --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$api_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$worker_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          test "$api_digest" = "$worker_digest"
+          api_image="$REGISTRY/shopport/api@$api_digest"
+          worker_image="$REGISTRY/shopport/worker@$worker_digest"
+          echo "api_image=$api_image" >> "$GITHUB_OUTPUT"
+          echo "worker_image=$worker_image" >> "$GITHUB_OUTPUT"
+          echo "main_digest=$api_digest" >> "$GITHUB_OUTPUT"
+          echo "API image: $api_image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Worker image: $worker_image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Shared main digest: $api_digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build image processor artifact
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.lambda
-          push: true
-          provenance: mode=max
-          sbom: true
-          tags: ${{ steps.ecr.outputs.registry }}/shopport-image-processor:sha-${{ github.sha }}
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.names.outputs.image_processor }}
+      - name: Scan image processor artifact
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.names.outputs.image_processor }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Push image processor artifact
+        run: docker push "${{ steps.names.outputs.image_processor }}"
+      - id: verify_lambda
+        name: Verify image processor digest
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          digest="$(aws ecr describe-images --repository-name shopport/image-processor --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="$REGISTRY/shopport/image-processor@$digest"
+          echo "image_processor_image=$image" >> "$GITHUB_OUTPUT"
+          echo "image_processor_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image processor image: $image" >> "$GITHUB_STEP_SUMMARY"
