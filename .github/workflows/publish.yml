@@ -27,6 +27,7 @@ jobs:
           aws-region: ap-northeast-2
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - id: names
         env:
@@ -36,29 +37,17 @@ jobs:
           echo "api=$REGISTRY/shopport/api:$TAG" >> "$GITHUB_OUTPUT"
           echo "worker=$REGISTRY/shopport/worker:$TAG" >> "$GITHUB_OUTPUT"
           echo "image_processor=$REGISTRY/shopport/image-processor:$TAG" >> "$GITHUB_OUTPUT"
-      - name: Build main runtime artifact
+      - name: Build and push main runtime artifact
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true
-          platforms: linux/amd64
-          provenance: false
-          sbom: false
+          push: true
+          platforms: linux/arm64
+          provenance: mode=max
+          sbom: true
           tags: |
             ${{ steps.names.outputs.api }}
             ${{ steps.names.outputs.worker }}
-      - name: Scan main runtime artifact
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          image-ref: ${{ steps.names.outputs.api }}
-          format: table
-          exit-code: '1'
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-      - name: Push main runtime artifact
-        run: |
-          docker push "${{ steps.names.outputs.api }}"
-          docker push "${{ steps.names.outputs.worker }}"
       - id: verify_main
         name: Verify main runtime digests
         env:
@@ -78,26 +67,24 @@ jobs:
           echo "API image: $api_image" >> "$GITHUB_STEP_SUMMARY"
           echo "Worker image: $worker_image" >> "$GITHUB_STEP_SUMMARY"
           echo "Shared main digest: $api_digest" >> "$GITHUB_STEP_SUMMARY"
-      - name: Build image processor artifact
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.lambda
-          load: true
-          platforms: linux/amd64
-          provenance: false
-          sbom: false
-          tags: ${{ steps.names.outputs.image_processor }}
-      - name: Scan image processor artifact
+      - name: Scan main runtime artifact
         uses: aquasecurity/trivy-action@0.36.0
         with:
-          image-ref: ${{ steps.names.outputs.image_processor }}
+          image-ref: ${{ steps.verify_main.outputs.api_image }}
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-      - name: Push image processor artifact
-        run: docker push "${{ steps.names.outputs.image_processor }}"
+      - name: Build and push image processor artifact
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.lambda
+          push: true
+          platforms: linux/arm64
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.names.outputs.image_processor }}
       - id: verify_lambda
         name: Verify image processor digest
         env:
@@ -110,3 +97,11 @@ jobs:
           echo "image_processor_image=$image" >> "$GITHUB_OUTPUT"
           echo "image_processor_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Image processor image: $image" >> "$GITHUB_STEP_SUMMARY"
+      - name: Scan image processor artifact
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.verify_lambda.outputs.image_processor_image }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
