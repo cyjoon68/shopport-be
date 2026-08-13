@@ -1,0 +1,75 @@
+import { z } from 'zod';
+
+const environmentSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(['development', 'test', 'production'])
+      .default('development'),
+    PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
+    DATABASE_URL: z
+      .string()
+      .default('postgresql://shopport:shopport@localhost:5432/shopport'),
+    REDIS_URL: z.url().default('redis://localhost:6379'),
+    AWS_REGION: z.string().default('ap-northeast-2'),
+    AWS_ENDPOINT_URL: z.url().optional(),
+    ASSET_BUCKET: z.string().default('shopport-assets'),
+    ASSET_CDN_HOST: z.string().default('localhost'),
+    CLOUDFRONT_KEY_PAIR_ID: z.string().optional(),
+    CLOUDFRONT_PRIVATE_KEY: z.string().optional(),
+    SQS_ASSET_RESULT_URL: z.string().default('shopport-asset-results'),
+    JWT_SECRET: z.string().min(32).default('local-development-secret-32-bytes'),
+    JWT_ISSUER: z.string().default('shopport'),
+    JWT_AUDIENCE: z.string().default('shopport-mobile'),
+    APPLE_CLIENT_ID: z.string().default('com.shopport.mobile'),
+    KAKAO_NATIVE_APP_KEY: z.string().default('local-kakao-key'),
+    REVENUECAT_WEBHOOK_SECRET: z.string().default('local-revenuecat-secret'),
+    CATALOG_MODE: z.enum(['fake', 'approved']).default('fake'),
+    ALLOW_DEMO_AUTH: z.stringbool().default(true),
+    PERSISTED_OPERATION_HASHES: z.string().default(''),
+  })
+  .superRefine((environment, context) => {
+    if (
+      environment.NODE_ENV === 'production' &&
+      environment.CATALOG_MODE === 'fake'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production requires at least one approved catalog provider',
+        path: ['CATALOG_MODE'],
+      });
+    }
+    if (environment.NODE_ENV === 'production' && environment.ALLOW_DEMO_AUTH) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Demo authentication must be disabled in production',
+        path: ['ALLOW_DEMO_AUTH'],
+      });
+    }
+    if (
+      environment.NODE_ENV === 'production' &&
+      environment.PERSISTED_OPERATION_HASHES.trim().length === 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production requires a persisted GraphQL operation allowlist',
+        path: ['PERSISTED_OPERATION_HASHES'],
+      });
+    }
+    if (
+      environment.NODE_ENV === 'production' &&
+      (!environment.CLOUDFRONT_KEY_PAIR_ID ||
+        !environment.CLOUDFRONT_PRIVATE_KEY)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production requires CloudFront signing credentials',
+        path: ['CLOUDFRONT_KEY_PAIR_ID'],
+      });
+    }
+  });
+
+export type Environment = z.infer<typeof environmentSchema>;
+
+export const validateEnvironment = (
+  values: Record<string, unknown>,
+): Environment => environmentSchema.parse(values);

@@ -1,0 +1,1 @@
+export const CATALOG_PROVIDER = Symbol('CATALOG_PROVIDER');

@@ -1,0 +1,130 @@
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
+import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { GraphQLModule } from '@nestjs/graphql';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
+import type { Request, Response } from 'express';
+import { validateEnvironment } from './config/environment.js';
+import type { Environment } from './config/environment.js';
+import { DatabaseModule } from './database/database.module.js';
+import { formatGraphqlError } from './graphql/error-formatter.js';
+import { PersistedOperationsMiddleware } from './graphql/persisted-operations.middleware.js';
+import { queryLimitRule } from './graphql/query-limits.js';
+import {
+  bigIntScalar,
+  dateTimeScalar,
+  urlScalar,
+  uuidScalar,
+} from './graphql/scalars.js';
+import { HealthModule } from './health/health.module.js';
+import { AiModule } from './modules/ai/ai.module.js';
+import { AssetsModule } from './modules/assets/assets.module.js';
+import { AuthGuard } from './modules/auth/auth.guard.js';
+import { AuthModule } from './modules/auth/auth.module.js';
+import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { ConversationModule } from './modules/conversations/conversation.module.js';
+import { FavoritesModule } from './modules/favorites/favorites.module.js';
+import { ProfileModule } from './modules/profile/profile.module.js';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
+import { RedisModule, REDIS } from './redis/redis.module.js';
+import type { RedisClient } from './redis/redis.module.js';
+import { RedisThrottlerStorage } from './redis/redis-throttler.storage.js';
+import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      cache: true,
+      validate: validateEnvironment,
+    }),
+    LoggerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Environment, true>) => ({
+        pinoHttp: {
+          level:
+            config.get('NODE_ENV', { infer: true }) === 'production'
+              ? 'info'
+              : 'debug',
+          autoLogging: false,
+          redact: {
+            paths: [
+              'req.headers.authorization',
+              'req.body',
+              'res.headers.set-cookie',
+            ],
+            censor: '[Redacted]',
+          },
+        },
+      }),
+    }),
+    DatabaseModule,
+    RedisModule,
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [REDIS],
+      useFactory: (redis: RedisClient) => ({
+        storage: new RedisThrottlerStorage(redis),
+        throttlers: [
+          { name: 'default', ttl: 60_000, limit: 120, blockDuration: 60_000 },
+        ],
+      }),
+    }),
+    GraphQLModule.forRootAsync<ApolloDriverConfig>({
+      driver: ApolloDriver,
+      inject: [ConfigService],
+      useFactory: (
+        config: ConfigService<Environment, true>,
+      ): ApolloDriverConfig => {
+        const production =
+          config.get('NODE_ENV', { infer: true }) === 'production';
+        return {
+          driver: ApolloDriver,
+          typePaths: ['./schema.graphql'],
+          introspection: !production,
+          includeStacktraceInErrorResponses: !production,
+          context: ({ req, res }: { req: Request; res: Response }) => ({
+            req,
+            res,
+          }),
+          validationRules: [queryLimitRule(8, 500)],
+          formatError: formatGraphqlError,
+          resolvers: {
+            BigInt: bigIntScalar,
+            DateTime: dateTimeScalar,
+            URL: urlScalar,
+            UUID: uuidScalar,
+          },
+        };
+      },
+    }),
+    AuthModule,
+    CatalogModule,
+    ConversationModule,
+    FavoritesModule,
+    ProfileModule,
+    AssetsModule,
+    AiModule,
+    SubscriptionsModule,
+    HealthModule,
+  ],
+  providers: [
+    PersistedOperationsMiddleware,
+    { provide: APP_GUARD, useClass: ShopportThrottlerGuard },
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
+})
+export class AppModule implements NestModule {
+  public configure(consumer: MiddlewareConsumer): void {
+    consumer
+      .apply(PersistedOperationsMiddleware)
+      .forRoutes({ path: 'graphql', method: RequestMethod.ALL });
+  }
+}
