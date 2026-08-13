@@ -639,6 +639,31 @@ describe('Shopport API vertical flow', () => {
   }, 30_000);
 
   it('revokes the access session on logout', async () => {
+    const [sessionId, secret] = refreshToken.split('.');
+    if (!sessionId || !secret) throw new Error('Expected refresh token parts');
+    const wrongSecret = `${secret.startsWith('A') ? 'B' : 'A'}${secret.slice(1)}`;
+
+    await request(baseUrl)
+      .post('/v1/auth/refresh')
+      .send({ refreshToken: `not-a-uuid.${'A'.repeat(43)}` })
+      .expect(401);
+    await request(baseUrl)
+      .post('/v1/auth/logout')
+      .send({ refreshToken: `not-a-uuid.${'A'.repeat(43)}` })
+      .expect(204);
+    await request(baseUrl)
+      .post('/v1/auth/logout')
+      .send({ refreshToken: `${sessionId}.${wrongSecret}` })
+      .expect(204);
+    await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({ query: '{ viewer { id } }' })
+      .expect(200)
+      .expect(({ text }) => {
+        expect(text).not.toContain('UNAUTHENTICATED');
+      });
+
     await request(baseUrl)
       .post('/v1/auth/logout')
       .send({ refreshToken })

@@ -184,11 +184,20 @@ export class AuthRepository {
       };
     });
 
-  public revokeSession = async (id: string): Promise<void> => {
+  public revokeSession = async (
+    id: string,
+    expectedHash: string,
+  ): Promise<void> => {
     await this.database
       .update(authSessions)
       .set({ revokedAt: new Date() })
-      .where(and(eq(authSessions.id, id), isNull(authSessions.revokedAt)));
+      .where(
+        and(
+          eq(authSessions.id, id),
+          eq(authSessions.tokenHash, expectedHash),
+          isNull(authSessions.revokedAt),
+        ),
+      );
   };
 
   public revokeAccountSessions = async (accountId: string): Promise<void> => {

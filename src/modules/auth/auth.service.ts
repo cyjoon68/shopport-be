@@ -74,7 +74,12 @@ export class AuthService {
 
   public logout = async (refreshToken: string): Promise<void> => {
     const parsed = parseRefreshToken(refreshToken);
-    if (parsed) await this.repository.revokeSession(parsed.sessionId);
+    if (parsed) {
+      await this.repository.revokeSession(
+        parsed.sessionId,
+        this.hash(parsed.secret),
+      );
+    }
   };
 
   private readonly issueTokens = async (

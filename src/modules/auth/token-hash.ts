@@ -1,4 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { validate as validateUuid } from 'uuid';
+
+const refreshSecretPattern = /^[A-Za-z\d_-]{43}$/u;
 
 export const createRefreshSecret = (): string =>
   randomBytes(32).toString('base64url');
@@ -26,8 +29,17 @@ export const parseRefreshToken = (
 ): Readonly<{ sessionId: string; secret: string }> | null => {
   const separator = token.indexOf('.');
   if (separator < 1 || separator === token.length - 1) return null;
+  const sessionId = token.slice(0, separator);
+  const secret = token.slice(separator + 1);
+  if (
+    !validateUuid(sessionId) ||
+    !refreshSecretPattern.test(secret) ||
+    Buffer.from(secret, 'base64url').toString('base64url') !== secret
+  ) {
+    return null;
+  }
   return {
-    sessionId: token.slice(0, separator),
-    secret: token.slice(separator + 1),
+    sessionId,
+    secret,
   };
 };
