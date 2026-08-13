@@ -68,7 +68,7 @@ jobs:
           echo "Worker image: $worker_image" >> "$GITHUB_STEP_SUMMARY"
           echo "Shared main digest: $api_digest" >> "$GITHUB_STEP_SUMMARY"
       - name: Scan main runtime artifact
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.verify_main.outputs.api_image }}
           format: table
@@ -126,7 +126,7 @@ jobs:
           upload-artifact: true
           upload-release-assets: false
       - name: Scan image processor artifact
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.verify_lambda.outputs.image_processor_image }}
           format: table
