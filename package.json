@@ -43,6 +43,7 @@
     "@nestjs/platform-express": "^11.1.9",
     "@nestjs/throttler": "^6.4.0",
     "@tanstack/ai": "0.44.0",
+    "@tanstack/ai-openai": "0.19.0",
     "dataloader": "^2.2.3",
     "drizzle-orm": "0.45.2",
     "graphql": "16.14.2",
@@ -60,6 +61,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
+    "@jest/globals": "^30.4.1",
     "@nestjs/cli": "^11.0.10",
     "@nestjs/testing": "^11.1.9",
     "@testcontainers/postgresql": "^11.5.1",

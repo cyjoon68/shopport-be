@@ -29,7 +29,21 @@ const environmentSchema = z
     APPLE_AUDIENCES: z.string().default(''),
     KAKAO_NATIVE_APP_KEY: z.string().default('local-kakao-key'),
     REVENUECAT_WEBHOOK_SECRET: z.string().default('local-revenuecat-secret'),
-    AI_MODE: z.enum(['fake', 'approved']).default('fake'),
+    AI_MODE: z.enum(['fake', 'commandcode']).default('fake'),
+    COMMAND_CODE_API_KEY: z.preprocess(
+      (value) =>
+        typeof value === 'string' && value.trim().length === 0
+          ? undefined
+          : value,
+      z.string().trim().min(1).optional(),
+    ),
+    COMMAND_CODE_MODEL: z.string().trim().min(1).default('gpt-5.4-mini'),
+    COMMAND_CODE_MAX_OUTPUT_TOKENS: z.coerce
+      .number()
+      .int()
+      .min(128)
+      .max(2_048)
+      .default(512),
     CATALOG_MODE: z.enum(['fake', 'approved']).default('fake'),
     ALLOW_DEMO_AUTH: z.stringbool().default(true),
     PERSISTED_OPERATION_MANIFEST: z.string().default(''),
@@ -48,6 +62,24 @@ const environmentSchema = z
         code: 'custom',
         message: 'Production requires an approved AI provider',
         path: ['AI_MODE'],
+      });
+    }
+    if (
+      environment.AI_MODE === 'commandcode' &&
+      !environment.COMMAND_CODE_API_KEY
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Command Code mode requires an API key',
+        path: ['COMMAND_CODE_API_KEY'],
+      });
+    }
+    if (/^claude-/iu.test(environment.COMMAND_CODE_MODEL)) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Command Code Claude models require the Anthropic Messages endpoint',
+        path: ['COMMAND_CODE_MODEL'],
       });
     }
     if (production && environment.ALLOW_DEMO_AUTH) {
@@ -131,6 +163,19 @@ const environmentSchema = z
           path: [path],
         });
       }
+    }
+    if (
+      production &&
+      environment.COMMAND_CODE_API_KEY &&
+      /(?:local|development|replace|example|changeme)/iu.test(
+        environment.COMMAND_CODE_API_KEY,
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Production secrets must not use local placeholder values',
+        path: ['COMMAND_CODE_API_KEY'],
+      });
     }
   });
 

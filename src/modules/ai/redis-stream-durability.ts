@@ -57,6 +57,11 @@ const durableChunkSchema = z.discriminatedUnion('type', [
     outcome: z.object({ type: z.literal('success') }),
     finishReason: z.literal('stop'),
   }),
+  z.object({
+    type: z.literal(EventType.RUN_ERROR),
+    message: z.string(),
+    code: z.string().default('AI_PROVIDER_ERROR'),
+  }),
 ]);
 
 const streamReadSchema = z
