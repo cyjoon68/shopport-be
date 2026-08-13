@@ -1,0 +1,11 @@
+allowBuilds:
+  '@apollo/protobufjs': true
+  cpu-features: false
+  esbuild: true
+  protobufjs: true
+  sharp: true
+  ssh2: false
+  unrs-resolver: true
+peerDependencyRules:
+  allowedVersions:
+    '@apollo/server': '5'

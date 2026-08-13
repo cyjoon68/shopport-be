@@ -1,0 +1,400 @@
+"An ISO 8601 timestamp."
+scalar DateTime
+
+"An integer serialized as a decimal string."
+scalar BigInt
+
+"An absolute URL."
+scalar URL
+
+"A UUID identifier."
+scalar UUID
+
+"A viewer account."
+type Viewer {
+  "The account identifier."
+  id: UUID!
+  "The display name from the chosen login identity."
+  displayName: String!
+  "An optional profile image."
+  profileImageUrl: URL
+  "The current access entitlement."
+  entitlement: Entitlement!
+  "The free-trial start time."
+  trialStartedAt: DateTime!
+  "The free-trial end time."
+  trialEndsAt: DateTime!
+}
+
+"AI access granted to a viewer."
+type Entitlement {
+  "The stable entitlement key."
+  key: String!
+  "Whether new AI turns are allowed."
+  isActive: Boolean!
+  "The store product identifier when subscribed."
+  productId: String
+  "The entitlement expiration time when known."
+  expiresAt: DateTime
+}
+
+"A shopping conversation."
+type Conversation {
+  "The conversation identifier."
+  id: UUID!
+  "The user-facing title."
+  title: String!
+  "Messages ordered from oldest to newest."
+  messages: [Message!]!
+  "The creation time."
+  createdAt: DateTime!
+  "The last update time."
+  updatedAt: DateTime!
+}
+
+"A single conversation message."
+type Message {
+  "The message identifier."
+  id: UUID!
+  "The message role."
+  role: MessageRole!
+  "Ordered structured message parts."
+  parts: [MessagePart!]!
+  "The terminal state of the message."
+  status: MessageStatus!
+  "The creation time."
+  createdAt: DateTime!
+}
+
+"The author role for a message."
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+"The processing state for a message."
+enum MessageStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+"A text message part."
+type TextMessagePart {
+  "The part identifier."
+  id: UUID!
+  "The displayed text."
+  text: String!
+}
+
+"An image message part."
+type ImageMessagePart {
+  "The part identifier."
+  id: UUID!
+  "The referenced asset."
+  asset: Asset!
+}
+
+"A product reference message part."
+type ProductReferenceMessagePart {
+  "The part identifier."
+  id: UUID!
+  "The referenced product."
+  product: Product!
+}
+
+"A read-only tool progress part."
+type ToolStatusMessagePart {
+  "The part identifier."
+  id: UUID!
+  "The stable tool name."
+  toolName: String!
+  "The tool execution state."
+  status: ToolStatus!
+}
+
+"A structured part of a message."
+union MessagePart =
+  | TextMessagePart
+  | ImageMessagePart
+  | ProductReferenceMessagePart
+  | ToolStatusMessagePart
+
+"The state of an AI tool call."
+enum ToolStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+"A normalized product from one approved provider."
+type Product {
+  "The stable product identifier."
+  id: UUID!
+  "The source provider."
+  provider: Provider!
+  "The provider product title."
+  title: String!
+  "The display image URL."
+  imageUrl: URL!
+  "Whether the outbound URL is an affiliate link."
+  isAffiliate: Boolean!
+  "The currently selected offer."
+  offer: Offer!
+  "Whether the viewer saved this product."
+  isSaved: Boolean!
+}
+
+"An approved shopping data provider."
+type Provider {
+  "The stable dynamic provider identifier."
+  providerId: String!
+  "The Korean display name."
+  displayName: String!
+}
+
+"A purchasable provider offer."
+type Offer {
+  "The offer identifier."
+  id: UUID!
+  "The item price."
+  price: Money!
+  "The delivery fee."
+  shipping: Money!
+  "The delivery-inclusive total."
+  total: Money!
+  "Whether the offer is currently in stock."
+  isInStock: Boolean!
+  "The expected delivery date when available."
+  deliveryExpectedAt: DateTime
+  "The last observation time."
+  observedAt: DateTime!
+  "A provider-domain allowlisted purchase URL."
+  outboundUrl: URL!
+}
+
+"A monetary amount in minor units."
+type Money {
+  "The decimal minor-unit amount serialized as a string."
+  amountMinor: BigInt!
+  "The ISO 4217 currency code."
+  currency: String!
+}
+
+"A private user-uploaded image asset."
+type Asset {
+  "The asset identifier."
+  id: UUID!
+  "The image processing state."
+  status: AssetStatus!
+  "The signed normalized image URL when ready."
+  url: URL
+  "The normalized image width."
+  width: Int
+  "The normalized image height."
+  height: Int
+  "The creation time."
+  createdAt: DateTime!
+}
+
+"The image processing state."
+enum AssetStatus {
+  PENDING_UPLOAD
+  PROCESSING
+  READY
+  REJECTED
+}
+
+"Pagination metadata for a connection."
+type PageInfo {
+  "Whether another page is available."
+  hasNextPage: Boolean!
+  "Whether a preceding page is available."
+  hasPreviousPage: Boolean!
+  "The first edge cursor."
+  startCursor: String
+  "The final edge cursor."
+  endCursor: String
+}
+
+"A conversation connection."
+type ConversationConnection {
+  "The connection edges."
+  edges: [ConversationEdge!]!
+  "Pagination metadata."
+  pageInfo: PageInfo!
+}
+
+"A conversation connection edge."
+type ConversationEdge {
+  "The opaque cursor."
+  cursor: String!
+  "The edge item."
+  node: Conversation!
+}
+
+"A product connection."
+type ProductConnection {
+  "The connection edges."
+  edges: [ProductEdge!]!
+  "Pagination metadata."
+  pageInfo: PageInfo!
+}
+
+"A product connection edge."
+type ProductEdge {
+  "The opaque cursor."
+  cursor: String!
+  "The edge item."
+  node: Product!
+}
+
+"Input for product search."
+input SearchProductsInput {
+  "The Korean natural-language search text."
+  query: String!
+}
+
+"Input for creating a conversation."
+input CreateConversationInput {
+  "An optional title, otherwise a localized default is used."
+  title: String
+}
+
+"Input for renaming a conversation."
+input RenameConversationInput {
+  "The conversation identifier."
+  id: UUID!
+  "The new title."
+  title: String!
+}
+
+"Input for deleting a conversation."
+input DeleteConversationInput {
+  "The conversation identifier."
+  id: UUID!
+}
+
+"Input for saving or unsaving a product."
+input ProductSelectionInput {
+  "The product identifier."
+  productId: UUID!
+}
+
+"Input for requesting an image upload."
+input CreateAssetUploadInput {
+  "The owning conversation identifier."
+  conversationId: UUID!
+  "The declared content type used only as an initial filter."
+  contentType: String!
+  "The declared upload size in bytes."
+  byteSize: BigInt!
+}
+
+"Input for deleting an asset."
+input DeleteAssetInput {
+  "The asset identifier."
+  id: UUID!
+}
+
+"An expected mutation error."
+type UserError {
+  "A stable application error code."
+  code: String!
+  "A localized safe message."
+  message: String!
+  "The invalid input path when relevant."
+  path: [String!]!
+}
+
+"The result of a conversation mutation."
+type ConversationPayload {
+  "The affected conversation when successful."
+  conversation: Conversation
+  "Expected input and business errors."
+  userErrors: [UserError!]!
+}
+
+"The result of a deletion mutation."
+type DeletePayload {
+  "Whether deletion was accepted."
+  success: Boolean!
+  "Expected input and business errors."
+  userErrors: [UserError!]!
+}
+
+"The result of a product save mutation."
+type ProductPayload {
+  "The affected product when successful."
+  product: Product
+  "Expected input and business errors."
+  userErrors: [UserError!]!
+}
+
+"A presigned private S3 upload."
+type AssetUpload {
+  "The created asset."
+  asset: Asset!
+  "The presigned upload URL."
+  uploadUrl: URL!
+  "Headers that must accompany the upload."
+  headers: [UploadHeader!]!
+}
+
+"A required presigned-upload header."
+type UploadHeader {
+  "The HTTP header name."
+  name: String!
+  "The HTTP header value."
+  value: String!
+}
+
+"The result of an asset upload request."
+type AssetUploadPayload {
+  "The upload details when successful."
+  upload: AssetUpload
+  "Expected input and business errors."
+  userErrors: [UserError!]!
+}
+
+"Read operations for the mobile client."
+type Query {
+  "Returns the authenticated viewer."
+  viewer: Viewer!
+  "Returns the viewer conversation history."
+  conversations(first: Int = 20, after: String): ConversationConnection!
+  "Returns one owned conversation."
+  conversation(id: UUID!): Conversation
+  "Searches approved providers using neutral-v1 ordering."
+  searchProducts(
+    input: SearchProductsInput!
+    first: Int = 20
+    after: String
+  ): ProductConnection!
+  "Returns one product."
+  product(id: UUID!): Product
+  "Returns products saved by the viewer."
+  savedProducts(first: Int = 20, after: String): ProductConnection!
+  "Returns one owned image asset."
+  asset(id: UUID!): Asset
+}
+
+"State-changing operations for the mobile client."
+type Mutation {
+  "Creates an empty shopping conversation."
+  createConversation(input: CreateConversationInput!): ConversationPayload!
+  "Renames an owned conversation."
+  renameConversation(input: RenameConversationInput!): ConversationPayload!
+  "Deletes a conversation and schedules asset removal."
+  deleteConversation(input: DeleteConversationInput!): DeletePayload!
+  "Saves a product for the viewer."
+  saveProduct(input: ProductSelectionInput!): ProductPayload!
+  "Removes a saved product."
+  unsaveProduct(input: ProductSelectionInput!): ProductPayload!
+  "Creates a private presigned image upload."
+  createAssetUpload(input: CreateAssetUploadInput!): AssetUploadPayload!
+  "Deletes an uploaded asset."
+  deleteAsset(input: DeleteAssetInput!): DeletePayload!
+  "Immediately blocks access and schedules complete account purge."
+  deleteViewerAccount: DeletePayload!
+}
