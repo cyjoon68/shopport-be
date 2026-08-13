@@ -72,17 +72,13 @@ export class AssetsService {
         Key: originalKey,
         ContentType: input.contentType,
         ContentLength: input.byteSize,
-        ServerSideEncryption: 'aws:kms',
       }),
       { expiresIn: 10 * 60 },
     );
     return {
       asset: this.toGraphql(asset),
       uploadUrl,
-      headers: [
-        { name: 'content-type', value: input.contentType },
-        { name: 'x-amz-server-side-encryption', value: 'aws:kms' },
-      ],
+      headers: [{ name: 'content-type', value: input.contentType }],
     };
   };
 

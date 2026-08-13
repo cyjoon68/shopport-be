@@ -119,7 +119,6 @@ const createRuntime = (): ImageProcessorDependencies => {
           Key: key,
           Body: body,
           ContentType: 'image/jpeg',
-          ServerSideEncryption: 'aws:kms',
         }),
       );
     },

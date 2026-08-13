@@ -44,7 +44,6 @@ export class ObjectStore {
         Body: body,
         ContentType: contentType,
         ChecksumSHA256: checksumSha256,
-        ServerSideEncryption: 'aws:kms',
       }),
     );
   };
