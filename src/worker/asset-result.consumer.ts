@@ -6,19 +6,11 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq } from 'drizzle-orm';
-import { z } from 'zod';
 import type { Environment } from '../config/environment.js';
 import { DATABASE } from '../database/database.module.js';
 import type { Database } from '../database/database.module.js';
 import { assets } from '../database/schema.js';
-
-const resultSchema = z.object({
-  assetId: z.uuid(),
-  normalizedKey: z.string().min(1).nullable(),
-  status: z.enum(['ready', 'rejected']),
-  width: z.number().int().positive().nullable(),
-  height: z.number().int().positive().nullable(),
-});
+import { assetResultSchema } from '../modules/assets/asset-result.js';
 
 const localCredentials = { accessKeyId: 'test', secretAccessKey: 'test' };
 
@@ -50,7 +42,7 @@ export class AssetResultConsumer {
     const received = response.Messages ?? [];
     for (const message of received) {
       if (!message.Body || !message.ReceiptHandle) continue;
-      const result = resultSchema.parse(JSON.parse(message.Body));
+      const result = assetResultSchema.parse(JSON.parse(message.Body));
       await this.database
         .update(assets)
         .set({

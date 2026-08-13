@@ -1,5 +1,10 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { and, eq, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
 import type { Database } from '../../database/database.module.js';
@@ -20,6 +25,7 @@ type BeginRunInput = Readonly<{
   accountId: string;
   conversationId: string;
   runId: string;
+  userMessageId: string;
   text: string;
   assetId: string | null;
 }>;
@@ -32,14 +38,27 @@ type NewMessagePart = {
   payload: unknown;
 };
 
+export type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
+
 @Injectable()
 export class AiRepository {
   public constructor(@Inject(DATABASE) private readonly database: Database) {}
 
-  public beginRun(input: BeginRunInput): Promise<boolean> {
-    return this.database.transaction(async (transaction) => {
+  public beginRun = (input: BeginRunInput): Promise<boolean> =>
+    this.database.transaction(async (transaction) => {
       const now = new Date();
       const usageDate = getKstUsageDate(now);
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.userMessageId}))`,
+      );
+      const existingMessages = await transaction
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.id, input.userMessageId))
+        .limit(1);
+      if (existingMessages.length > 0) {
+        throw new ConflictException('Message already exists');
+      }
       const inserted = await transaction
         .insert(aiRuns)
         .values({
@@ -50,6 +69,8 @@ export class AiRepository {
           usageKind: input.assetId ? 'image' : 'text',
           status: 'reserved',
           startedAt: now,
+          deadlineAt: new Date(now.getTime() + 60_000),
+          heartbeatAt: now,
         })
         .onConflictDoNothing()
         .returning({ id: aiRuns.id });
@@ -138,9 +159,8 @@ export class AiRepository {
           ),
         );
 
-      const messageId = uuidv7();
       await transaction.insert(messages).values({
-        id: messageId,
+        id: input.userMessageId,
         conversationId: input.conversationId,
         role: 'user',
         runId: input.runId,
@@ -151,7 +171,7 @@ export class AiRepository {
       if (input.text.length > 0) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.userMessageId,
           kind: 'text',
           position: parts.length,
           payload: { text: input.text },
@@ -160,7 +180,7 @@ export class AiRepository {
       if (input.assetId) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.userMessageId,
           kind: 'image',
           position: parts.length,
           payload: {
@@ -177,22 +197,21 @@ export class AiRepository {
         await transaction.insert(messageParts).values(parts);
       return true;
     });
-  }
 
-  public completeRun(
+  public completeRun = (
     runId: string,
     conversationId: string,
+    messageId: string,
     text: string,
     productIds: ReadonlyArray<string>,
-  ): Promise<void> {
-    return this.database.transaction(async (transaction) => {
+  ): Promise<void> =>
+    this.database.transaction(async (transaction) => {
       const updated = await transaction
         .update(aiRuns)
         .set({ status: 'completed', completedAt: new Date() })
         .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
         .returning({ id: aiRuns.id });
       if (updated.length === 0) return;
-      const messageId = uuidv7();
       await transaction.insert(messages).values({
         id: messageId,
         conversationId,
@@ -218,10 +237,9 @@ export class AiRepository {
       ];
       await transaction.insert(messageParts).values(parts);
     });
-  }
 
-  public failRun(runId: string): Promise<void> {
-    return this.database.transaction(async (transaction) => {
+  public failRun = (runId: string): Promise<void> =>
+    this.database.transaction(async (transaction) => {
       const runs = await transaction
         .update(aiRuns)
         .set({ status: 'failed', completedAt: new Date() })
@@ -239,7 +257,7 @@ export class AiRepository {
           : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
       await transaction
         .update(dailyUsage)
-        .set(countUpdate)
+        .set({ ...countUpdate, updatedAt: new Date() })
         .where(
           and(
             eq(dailyUsage.accountId, run.accountId),
@@ -247,5 +265,138 @@ export class AiRepository {
           ),
         );
     });
-  }
+
+  public assertOwnedRun = async (
+    accountId: string,
+    runId: string,
+    conversationId?: string,
+  ): Promise<void> => {
+    const rows = await this.database
+      .select({ id: aiRuns.id })
+      .from(aiRuns)
+      .where(
+        and(
+          eq(aiRuns.id, runId),
+          eq(aiRuns.accountId, accountId),
+          conversationId
+            ? eq(aiRuns.conversationId, conversationId)
+            : undefined,
+        ),
+      )
+      .limit(1);
+    if (rows.length === 0) throw new NotFoundException('Run not found');
+  };
+
+  public cancelRun = (
+    accountId: string,
+    conversationId: string,
+    runId: string,
+  ): Promise<CancelRunResult> =>
+    this.database.transaction(async (transaction) => {
+      const runs = await transaction
+        .update(aiRuns)
+        .set({ status: 'cancelled', completedAt: new Date() })
+        .where(
+          and(
+            eq(aiRuns.id, runId),
+            eq(aiRuns.accountId, accountId),
+            eq(aiRuns.conversationId, conversationId),
+            eq(aiRuns.status, 'reserved'),
+          ),
+        )
+        .returning({
+          accountId: aiRuns.accountId,
+          usageDate: aiRuns.usageDate,
+          usageKind: aiRuns.usageKind,
+        });
+      const run = runs.at(0);
+      if (run) {
+        const countUpdate =
+          run.usageKind === 'image'
+            ? { imageCount: sql`greatest(${dailyUsage.imageCount} - 1, 0)` }
+            : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
+        await transaction
+          .update(dailyUsage)
+          .set({ ...countUpdate, updatedAt: new Date() })
+          .where(
+            and(
+              eq(dailyUsage.accountId, run.accountId),
+              eq(dailyUsage.usageDate, run.usageDate),
+            ),
+          );
+        return 'cancelled';
+      }
+      const owned = await transaction
+        .select({ status: aiRuns.status })
+        .from(aiRuns)
+        .where(
+          and(
+            eq(aiRuns.id, runId),
+            eq(aiRuns.accountId, accountId),
+            eq(aiRuns.conversationId, conversationId),
+          ),
+        )
+        .limit(1);
+      if (owned.length === 0) throw new NotFoundException('Run not found');
+      return owned.at(0)?.status === 'cancelled'
+        ? 'already_cancelled'
+        : 'terminal';
+    });
+
+  public heartbeatRun = async (
+    runId: string,
+    now = new Date(),
+  ): Promise<void> => {
+    await this.database
+      .update(aiRuns)
+      .set({ heartbeatAt: now })
+      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
+  };
+
+  public recoverStaleReservedRuns = (now = new Date()): Promise<number> =>
+    this.database.transaction(async (transaction) => {
+      const heartbeatCutoff = new Date(now.getTime() - 120_000);
+      const staleRuns = await transaction
+        .select({ id: aiRuns.id })
+        .from(aiRuns)
+        .where(
+          and(
+            eq(aiRuns.status, 'reserved'),
+            or(
+              lte(aiRuns.deadlineAt, now),
+              lte(aiRuns.heartbeatAt, heartbeatCutoff),
+            ),
+          ),
+        )
+        .for('update', { skipLocked: true });
+      let recovered = 0;
+      for (const stale of staleRuns) {
+        const runs = await transaction
+          .update(aiRuns)
+          .set({ status: 'failed', completedAt: now })
+          .where(and(eq(aiRuns.id, stale.id), eq(aiRuns.status, 'reserved')))
+          .returning({
+            accountId: aiRuns.accountId,
+            usageDate: aiRuns.usageDate,
+            usageKind: aiRuns.usageKind,
+          });
+        const run = runs.at(0);
+        if (!run) continue;
+        const countUpdate =
+          run.usageKind === 'image'
+            ? { imageCount: sql`greatest(${dailyUsage.imageCount} - 1, 0)` }
+            : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
+        await transaction
+          .update(dailyUsage)
+          .set({ ...countUpdate, updatedAt: now })
+          .where(
+            and(
+              eq(dailyUsage.accountId, run.accountId),
+              eq(dailyUsage.usageDate, run.usageDate),
+            ),
+          );
+        recovered += 1;
+      }
+      return recovered;
+    });
 }

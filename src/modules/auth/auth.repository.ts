@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
 import type { Database } from '../../database/database.module.js';
@@ -11,46 +11,54 @@ import {
 } from '../../database/schema.js';
 import type { AccountSession, VerifiedIdentity } from './auth.types.js';
 
-type SessionRecord = Readonly<{
-  id: string;
-  accountId: string;
-  tokenHash: string;
-  expiresAt: Date;
-  revokedAt: Date | null;
+type RotateSessionInput = Readonly<{
+  previousId: string;
+  expectedHash: string;
+  nextTokenHash: string;
+  nextExpiresAt: Date;
+  matches: (actual: string, expected: string) => boolean;
 }>;
+
+type RotateSessionResult =
+  | Readonly<{ status: 'invalid' }>
+  | Readonly<{ status: 'replay' }>
+  | Readonly<{ status: 'rotated'; accountId: string; sessionId: string }>;
 
 @Injectable()
 export class AuthRepository {
   public constructor(@Inject(DATABASE) private readonly database: Database) {}
 
-  public async findOrCreateAccount(
+  public findOrCreateAccount = async (
     identity: VerifiedIdentity,
     now: Date,
-  ): Promise<AccountSession> {
-    const existing = await this.database
-      .select({
-        accountId: accounts.id,
-        displayName: accounts.displayName,
-        profileImageUrl: accounts.profileImageUrl,
-        trialStartedAt: accounts.trialStartedAt,
-        trialEndsAt: accounts.trialEndsAt,
-      })
-      .from(authIdentities)
-      .innerJoin(accounts, eq(authIdentities.accountId, accounts.id))
-      .where(
-        and(
-          eq(authIdentities.provider, identity.provider),
-          eq(authIdentities.providerSubject, identity.subject),
-          isNull(accounts.deletedAt),
-        ),
-      )
-      .limit(1);
-    const account = existing.at(0);
-    if (account) return account;
+  ): Promise<AccountSession> =>
+    this.database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${identity.provider}), hashtext(${identity.subject}))`,
+      );
+      const existing = await transaction
+        .select({
+          accountId: accounts.id,
+          displayName: accounts.displayName,
+          profileImageUrl: accounts.profileImageUrl,
+          trialStartedAt: accounts.trialStartedAt,
+          trialEndsAt: accounts.trialEndsAt,
+        })
+        .from(authIdentities)
+        .innerJoin(accounts, eq(authIdentities.accountId, accounts.id))
+        .where(
+          and(
+            eq(authIdentities.provider, identity.provider),
+            eq(authIdentities.providerSubject, identity.subject),
+            isNull(accounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const account = existing.at(0);
+      if (account) return account;
 
-    const accountId = uuidv7();
-    const trialEndsAt = new Date(now.getTime() + 168 * 60 * 60 * 1_000);
-    await this.database.transaction(async (transaction) => {
+      const accountId = uuidv7();
+      const trialEndsAt = new Date(now.getTime() + 168 * 60 * 60 * 1_000);
       await transaction.insert(accounts).values({
         id: accountId,
         displayName: identity.displayName,
@@ -67,21 +75,20 @@ export class AuthRepository {
       await transaction
         .insert(entitlements)
         .values({ accountId, key: 'trial' });
+      return {
+        accountId,
+        displayName: identity.displayName,
+        profileImageUrl: identity.profileImageUrl,
+        trialStartedAt: now,
+        trialEndsAt,
+      };
     });
-    return {
-      accountId,
-      displayName: identity.displayName,
-      profileImageUrl: identity.profileImageUrl,
-      trialStartedAt: now,
-      trialEndsAt,
-    };
-  }
 
-  public async createSession(
+  public createSession = async (
     accountId: string,
     tokenHash: string,
     expiresAt: Date,
-  ): Promise<string> {
+  ): Promise<string> => {
     const id = uuidv7();
     await this.database.insert(authSessions).values({
       id,
@@ -90,28 +97,12 @@ export class AuthRepository {
       expiresAt,
     });
     return id;
-  }
+  };
 
-  public async findSession(id: string): Promise<SessionRecord | null> {
-    const rows = await this.database
-      .select({
-        id: authSessions.id,
-        accountId: authSessions.accountId,
-        tokenHash: authSessions.tokenHash,
-        expiresAt: authSessions.expiresAt,
-        revokedAt: authSessions.revokedAt,
-      })
-      .from(authSessions)
-      .innerJoin(accounts, eq(authSessions.accountId, accounts.id))
-      .where(and(eq(authSessions.id, id), isNull(accounts.deletedAt)))
-      .limit(1);
-    return rows.at(0) ?? null;
-  }
-
-  public async isAccessActive(
+  public isAccessActive = async (
     accountId: string,
     sessionId: string,
-  ): Promise<boolean> {
+  ): Promise<boolean> => {
     const rows = await this.database
       .select({ id: authSessions.id })
       .from(authSessions)
@@ -126,38 +117,90 @@ export class AuthRepository {
       )
       .limit(1);
     return rows.length === 1;
-  }
+  };
 
-  public async rotateSession(
-    previousId: string,
-    accountId: string,
-    tokenHash: string,
-    expiresAt: Date,
-  ): Promise<string> {
-    const nextId = uuidv7();
-    await this.database.transaction(async (transaction) => {
+  public rotateSession = (
+    input: RotateSessionInput,
+  ): Promise<RotateSessionResult> =>
+    this.database.transaction(async (transaction) => {
+      const sessions = await transaction
+        .select({
+          id: authSessions.id,
+          accountId: authSessions.accountId,
+          tokenHash: authSessions.tokenHash,
+          expiresAt: authSessions.expiresAt,
+          revokedAt: authSessions.revokedAt,
+        })
+        .from(authSessions)
+        .innerJoin(accounts, eq(authSessions.accountId, accounts.id))
+        .where(
+          and(
+            eq(authSessions.id, input.previousId),
+            isNull(accounts.deletedAt),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      const session = sessions.at(0);
+      if (!session) return { status: 'invalid' };
+      if (
+        !input.matches(session.tokenHash, input.expectedHash) ||
+        session.expiresAt <= new Date()
+      ) {
+        return { status: 'invalid' };
+      }
+      if (session.revokedAt) {
+        await transaction
+          .update(authSessions)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(authSessions.accountId, session.accountId),
+              isNull(authSessions.revokedAt),
+            ),
+          );
+        return { status: 'replay' };
+      }
+      const nextId = uuidv7();
       await transaction.insert(authSessions).values({
         id: nextId,
-        accountId,
-        tokenHash,
-        expiresAt,
+        accountId: session.accountId,
+        tokenHash: input.nextTokenHash,
+        expiresAt: input.nextExpiresAt,
       });
       await transaction
         .update(authSessions)
         .set({ revokedAt: new Date(), replacedBySessionId: nextId })
-        .where(eq(authSessions.id, previousId));
+        .where(
+          and(
+            eq(authSessions.id, input.previousId),
+            isNull(authSessions.revokedAt),
+          ),
+        );
+      return {
+        status: 'rotated',
+        accountId: session.accountId,
+        sessionId: nextId,
+      };
     });
-    return nextId;
-  }
 
-  public async revokeSession(id: string): Promise<void> {
+  public revokeSession = async (
+    id: string,
+    expectedHash: string,
+  ): Promise<void> => {
     await this.database
       .update(authSessions)
       .set({ revokedAt: new Date() })
-      .where(and(eq(authSessions.id, id), isNull(authSessions.revokedAt)));
-  }
+      .where(
+        and(
+          eq(authSessions.id, id),
+          eq(authSessions.tokenHash, expectedHash),
+          isNull(authSessions.revokedAt),
+        ),
+      );
+  };
 
-  public async revokeAccountSessions(accountId: string): Promise<void> {
+  public revokeAccountSessions = async (accountId: string): Promise<void> => {
     await this.database
       .update(authSessions)
       .set({ revokedAt: new Date() })
@@ -167,5 +210,5 @@ export class AuthRepository {
           isNull(authSessions.revokedAt),
         ),
       );
-  }
+  };
 }

@@ -3,20 +3,20 @@ import { ConfigService } from '@nestjs/config';
 import type { NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import type { Environment } from '../config/environment.js';
+import {
+  hashGraphqlDocument,
+  parsePersistedOperationManifest,
+} from './persisted-operation-manifest.js';
 
 @Injectable()
 export class PersistedOperationsMiddleware implements NestMiddleware {
-  readonly #allowed: ReadonlySet<string>;
+  readonly #manifest: ReadonlyMap<string, string>;
   readonly #production: boolean;
 
   public constructor(config: ConfigService<Environment, true>) {
-    this.#production = config.get('NODE_ENV', { infer: true }) === 'production';
-    this.#allowed = new Set(
-      config
-        .get('PERSISTED_OPERATION_HASHES', { infer: true })
-        .split(',')
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0),
+    this.#production = config.get('APP_ENV', { infer: true }) === 'prod';
+    this.#manifest = parsePersistedOperationManifest(
+      config.get('PERSISTED_OPERATION_MANIFEST', { infer: true }),
     );
   }
 
@@ -26,7 +26,23 @@ export class PersistedOperationsMiddleware implements NestMiddleware {
       return;
     }
     const operationHash = request.header('x-shopport-operation-id');
-    if (!operationHash || !this.#allowed.has(operationHash)) {
+    const body: unknown = request.body;
+    const query =
+      typeof body === 'object' &&
+      body !== null &&
+      'query' in body &&
+      typeof body.query === 'string'
+        ? body.query
+        : null;
+    let matches = false;
+    if (operationHash && this.#manifest.has(operationHash) && query) {
+      try {
+        matches = hashGraphqlDocument(query) === operationHash;
+      } catch {
+        matches = false;
+      }
+    }
+    if (!matches) {
       response
         .status(403)
         .json({ code: 'FORBIDDEN', message: 'Persisted operation required' });

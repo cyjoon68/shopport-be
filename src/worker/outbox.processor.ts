@@ -59,9 +59,9 @@ export class OutboxProcessor {
   ): Promise<void> => {
     if (event.topic === 'asset.purge') {
       const payload = assetPayload.parse(event.payload);
-      await this.objects.deleteKey(payload.originalKey);
+      await this.objects.deleteKey('raw', payload.originalKey);
       if (payload.normalizedKey)
-        await this.objects.deleteKey(payload.normalizedKey);
+        await this.objects.deleteKey('normalized', payload.normalizedKey);
       return;
     }
     if (event.topic === 'conversation.purge') {
@@ -97,11 +97,14 @@ export class OutboxProcessor {
     ]);
     await Promise.all(
       assetRows.flatMap(({ originalKey, normalizedKey }) => [
-        this.objects.deleteKey(originalKey),
-        ...(normalizedKey ? [this.objects.deleteKey(normalizedKey)] : []),
+        this.objects.deleteKey('raw', originalKey),
+        ...(normalizedKey
+          ? [this.objects.deleteKey('normalized', normalizedKey)]
+          : []),
       ]),
     );
     await this.objects.deletePrefix(
+      'archive',
       `archives/${payload.accountId}/${payload.conversationId}/`,
     );
     await this.deleteRunStreams(runRows.map(({ id }) => id));
@@ -130,8 +133,9 @@ export class OutboxProcessor {
         .where(eq(conversations.accountId, accountId)),
     ]);
     await Promise.all([
-      this.objects.deletePrefix(`uploads/${accountId}/`),
-      this.objects.deletePrefix(`archives/${accountId}/`),
+      this.objects.deletePrefix('raw', `uploads/${accountId}/`),
+      this.objects.deletePrefix('normalized', `uploads/${accountId}/`),
+      this.objects.deletePrefix('archive', `archives/${accountId}/`),
       this.deleteRunStreams(runRows.map(({ id }) => id)),
     ]);
     await this.database.transaction(async (transaction) => {

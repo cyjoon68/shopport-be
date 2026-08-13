@@ -4,8 +4,10 @@ import { validateEnvironment } from '../config/environment.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { ArchiveModule } from '../modules/archive/archive.module.js';
+import { AiRepository } from '../modules/ai/ai.repository.js';
 import { AssetResultConsumer } from './asset-result.consumer.js';
 import { OutboxProcessor } from './outbox.processor.js';
+import { StaleRunRecovery } from './stale-run-recovery.js';
 
 @Module({
   imports: [
@@ -18,6 +20,11 @@ import { OutboxProcessor } from './outbox.processor.js';
     RedisModule,
     ArchiveModule,
   ],
-  providers: [AssetResultConsumer, OutboxProcessor],
+  providers: [
+    AiRepository,
+    AssetResultConsumer,
+    OutboxProcessor,
+    StaleRunRecovery,
+  ],
 })
 export class WorkerModule {}

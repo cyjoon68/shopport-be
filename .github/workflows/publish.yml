@@ -12,6 +12,13 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'non-production' }}
+    outputs:
+      api_image: ${{ steps.verify_main.outputs.api_image }}
+      api_digest: ${{ steps.verify_main.outputs.main_digest }}
+      worker_image: ${{ steps.verify_main.outputs.worker_image }}
+      worker_digest: ${{ steps.verify_main.outputs.main_digest }}
+      image_processor_image: ${{ steps.verify_lambda.outputs.image_processor_image }}
+      image_processor_digest: ${{ steps.verify_lambda.outputs.image_processor_digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -20,21 +27,109 @@ jobs:
           aws-region: ap-northeast-2
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build and push API/worker image
+      - id: names
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          echo "api=$REGISTRY/shopport/api:$TAG" >> "$GITHUB_OUTPUT"
+          echo "worker=$REGISTRY/shopport/worker:$TAG" >> "$GITHUB_OUTPUT"
+          echo "image_processor=$REGISTRY/shopport/image-processor:$TAG" >> "$GITHUB_OUTPUT"
+      - name: Build and push main runtime artifact
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/arm64
           provenance: mode=max
           sbom: true
-          tags: ${{ steps.ecr.outputs.registry }}/shopport-api:sha-${{ github.sha }}
-      - name: Build and push image processor
+          tags: |
+            ${{ steps.names.outputs.api }}
+            ${{ steps.names.outputs.worker }}
+      - id: verify_main
+        name: Verify main runtime digests
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          api_digest="$(aws ecr describe-images --repository-name shopport/api --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          worker_digest="$(aws ecr describe-images --repository-name shopport/worker --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$api_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$worker_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          test "$api_digest" = "$worker_digest"
+          api_image="$REGISTRY/shopport/api@$api_digest"
+          worker_image="$REGISTRY/shopport/worker@$worker_digest"
+          echo "api_image=$api_image" >> "$GITHUB_OUTPUT"
+          echo "worker_image=$worker_image" >> "$GITHUB_OUTPUT"
+          echo "main_digest=$api_digest" >> "$GITHUB_OUTPUT"
+          echo "API image: $api_image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Worker image: $worker_image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Shared main digest: $api_digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Scan main runtime artifact
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.verify_main.outputs.api_image }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Build and push image processor artifact
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.lambda
           push: true
-          provenance: mode=max
-          sbom: true
-          tags: ${{ steps.ecr.outputs.registry }}/shopport-image-processor:sha-${{ github.sha }}
+          platforms: linux/arm64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.names.outputs.image_processor }}
+      - id: verify_lambda
+        name: Verify image processor manifest
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          result="$(aws ecr batch-get-image \
+            --repository-name shopport/image-processor \
+            --image-ids imageTag="$TAG" \
+            --accepted-media-types \
+              application/vnd.oci.image.manifest.v1+json \
+              application/vnd.docker.distribution.manifest.v2+json \
+            --output json)"
+          test "$(jq '.failures | length' <<< "$result")" -eq 0
+          test "$(jq '.images | length' <<< "$result")" -eq 1
+          digest="$(jq -r '.images[0].imageId.imageDigest' <<< "$result")"
+          media_type="$(jq -r '.images[0].imageManifestMediaType' <<< "$result")"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          case "$media_type" in
+            application/vnd.oci.image.manifest.v1+json | application/vnd.docker.distribution.manifest.v2+json) ;;
+            *) exit 1 ;;
+          esac
+          image="$REGISTRY/shopport/image-processor@$digest"
+          docker pull --platform linux/arm64 "$image"
+          architecture="$(docker image inspect --format '{{.Architecture}}' "$image")"
+          operating_system="$(docker image inspect --format '{{.Os}}' "$image")"
+          test "$architecture" = "arm64"
+          test "$operating_system" = "linux"
+          echo "image_processor_image=$image" >> "$GITHUB_OUTPUT"
+          echo "image_processor_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image processor image: $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image processor manifest: $media_type ($operating_system/$architecture)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate image processor SBOM artifact
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.verify_lambda.outputs.image_processor_image }}
+          format: spdx-json
+          artifact-name: image-processor-sbom-${{ github.sha }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+      - name: Scan image processor artifact
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.verify_lambda.outputs.image_processor_image }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true

@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   HttpException,
   HttpStatus,
+  HttpCode,
   Inject,
   Post,
   Query,
@@ -12,19 +14,24 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { resumeHttpResponse, toHttpResponse } from '@tanstack/ai';
-import type { Request, Response as ExpressResponse } from 'express';
+import type { Response as ExpressResponse } from 'express';
 import { z } from 'zod';
 import { REDIS } from '../../redis/redis.module.js';
 import type { RedisClient } from '../../redis/redis.module.js';
 import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { AiAccessError } from './ai.errors.js';
-import { parseRunId } from './ai-request.js';
+import { AiRequestValidationError, parseRunReference } from './ai-request.js';
 import { AiService } from './ai.service.js';
 import { RedisStreamDurability } from './redis-stream-durability.js';
 
 const resumeQuerySchema = z.object({
   runId: z.uuid(),
   offset: z.string().min(1),
+});
+
+const cancelSchema = z.strictObject({
+  threadId: z.uuid(),
+  runId: z.uuid(),
 });
 
 const pipeResponse = async (
@@ -63,36 +70,72 @@ export class AiController {
     @Body() body: unknown,
     @Res() response: ExpressResponse,
   ): Promise<void> {
-    const runId = parseRunId(body);
-    const offset = request.header('last-event-id') ?? null;
-    const durability = new RedisStreamDurability(this.redis, runId, offset);
     try {
+      const reference = parseRunReference(body);
+      const offset = request.header('last-event-id') ?? null;
+      if (offset !== null) {
+        await this.ai.assertOwnedRun(
+          viewerIdFrom(request),
+          reference.runId,
+          reference.threadId,
+        );
+      }
+      const durability = new RedisStreamDurability(
+        this.redis,
+        reference.runId,
+        offset,
+      );
       const result =
         offset === null
           ? toHttpResponse(await this.ai.start(viewerIdFrom(request), body), {
               durability: { adapter: durability },
-              headers: { 'x-run-id': runId },
+              headers: { 'x-run-id': reference.runId },
             })
           : resumeHttpResponse({ adapter: durability });
       await pipeResponse(result, response);
     } catch (error) {
       if (error instanceof AiAccessError) throw accessError(error);
+      if (
+        error instanceof z.ZodError ||
+        error instanceof AiRequestValidationError
+      ) {
+        throw new BadRequestException('Invalid AI request');
+      }
       throw error;
     }
   }
 
   @Get()
   public async resume(
-    @Req() request: Request,
+    @Req() request: AuthenticatedRequest,
     @Query() query: unknown,
     @Res() response: ExpressResponse,
   ): Promise<void> {
-    const parsed = resumeQuerySchema.parse(query);
+    const parsed = resumeQuerySchema.safeParse(query);
+    if (!parsed.success)
+      throw new BadRequestException('Invalid replay request');
+    await this.ai.assertOwnedRun(viewerIdFrom(request), parsed.data.runId);
     const durability = new RedisStreamDurability(
       this.redis,
-      parsed.runId,
-      request.header('last-event-id') ?? parsed.offset,
+      parsed.data.runId,
+      request.header('last-event-id') ?? parsed.data.offset,
     );
     await pipeResponse(resumeHttpResponse({ adapter: durability }), response);
+  }
+
+  @Post('cancel')
+  @HttpCode(204)
+  public async cancel(
+    @Req() request: AuthenticatedRequest,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const parsed = cancelSchema.safeParse(body);
+    if (!parsed.success)
+      throw new BadRequestException('Invalid cancel request');
+    await this.ai.cancel(
+      viewerIdFrom(request),
+      parsed.data.threadId,
+      parsed.data.runId,
+    );
   }
 }

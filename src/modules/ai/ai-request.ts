@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 const messageSchema = z.looseObject({
-  id: z.string().min(1),
-  role: z.string(),
+  id: z.uuid(),
+  role: z.enum(['user', 'assistant', 'tool']),
   content: z.unknown(),
 });
 
@@ -16,9 +16,12 @@ const bodySchema = z.looseObject({
 export type AiRequest = Readonly<{
   threadId: string;
   runId: string;
+  userMessageId: string;
   text: string;
   assetId: string | null;
 }>;
+
+export class AiRequestValidationError extends Error {}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -38,22 +41,34 @@ const textFromContent = (content: unknown): string => {
 
 export const parseAiRequest = (body: unknown): AiRequest => {
   const parsed = bodySchema.parse(body);
-  const userMessage = parsed.messages
-    .toReversed()
-    .find((message) => message.role === 'user');
+  const userMessage = parsed.messages.at(-1);
+  if (userMessage?.role !== 'user') {
+    throw new AiRequestValidationError('AI turn must end with a user message');
+  }
+  const userMessageId = z.uuidv7().parse(userMessage.id);
   const assetIdValue = parsed.forwardedProps.assetId;
-  const assetId = z.uuid().safeParse(assetIdValue);
+  const assetId =
+    assetIdValue === undefined || assetIdValue === null
+      ? null
+      : z.uuid().parse(assetIdValue);
+  const text = textFromContent(userMessage.content);
+  if (text.length > 2_000) {
+    throw new AiRequestValidationError('User message exceeds 2000 chars');
+  }
   const request = {
     threadId: parsed.threadId,
     runId: parsed.runId,
-    text: userMessage ? textFromContent(userMessage.content) : '',
-    assetId: assetId.success ? assetId.data : null,
+    userMessageId,
+    text,
+    assetId,
   };
   if (request.text.length === 0 && request.assetId === null) {
-    throw new Error('AI turn requires text or one image');
+    throw new AiRequestValidationError('AI turn requires text or one image');
   }
   return request;
 };
 
-export const parseRunId = (body: unknown): string =>
-  bodySchema.pick({ runId: true }).parse(body).runId;
+export const parseRunReference = (
+  body: unknown,
+): Readonly<{ threadId: string; runId: string }> =>
+  bodySchema.pick({ threadId: true, runId: true }).parse(body);

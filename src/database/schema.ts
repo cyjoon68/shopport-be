@@ -1,7 +1,10 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   date,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -100,20 +103,34 @@ export const conversations = pgTable('conversations', {
   ...timestamps,
 });
 
-export const aiRuns = pgTable('ai_runs', {
-  id: uuid('id').primaryKey(),
-  accountId: uuid('account_id')
-    .notNull()
-    .references(() => accounts.id, { onDelete: 'cascade' }),
-  conversationId: uuid('conversation_id')
-    .notNull()
-    .references(() => conversations.id, { onDelete: 'cascade' }),
-  usageDate: date('usage_date').notNull(),
-  usageKind: text('usage_kind').notNull(),
-  status: text('status').notNull(),
-  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
-  completedAt: timestamp('completed_at', { withTimezone: true }),
-});
+export const aiRuns = pgTable(
+  'ai_runs',
+  {
+    id: uuid('id').primaryKey(),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    usageDate: date('usage_date').notNull(),
+    usageKind: text('usage_kind').notNull(),
+    status: text('status').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      'ai_runs_status_check',
+      sql`${table.status} in ('reserved', 'completed', 'failed', 'cancelled')`,
+    ),
+    index('ai_runs_stale_reserved_idx')
+      .on(table.deadlineAt, table.heartbeatAt)
+      .where(sql`${table.status} = 'reserved'`),
+  ],
+);
 
 export const messages = pgTable('messages', {
   id: uuid('id').notNull(),

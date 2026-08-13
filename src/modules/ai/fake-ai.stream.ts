@@ -6,12 +6,12 @@ import type { ProductGraphql } from '../catalog/catalog.mapper.js';
 type FakeStreamInput = Readonly<{
   threadId: string;
   runId: string;
+  messageId: string;
   message: string;
   products: ReadonlyArray<ProductGraphql>;
 }>;
 
 const chunksFor = (input: FakeStreamInput): Array<StreamChunk> => {
-  const messageId = uuidv7();
   const toolCallId = uuidv7();
   const productResult = JSON.stringify({
     kind: 'product_cards',
@@ -21,7 +21,7 @@ const chunksFor = (input: FakeStreamInput): Array<StreamChunk> => {
   const textChunks = input.message.match(/.{1,18}/gu) ?? [input.message];
   const textEvents = textChunks.map((delta): StreamChunk => ({
     type: EventType.TEXT_MESSAGE_CONTENT,
-    messageId,
+    messageId: input.messageId,
     delta,
   }));
   return [
@@ -35,7 +35,7 @@ const chunksFor = (input: FakeStreamInput): Array<StreamChunk> => {
       toolCallId,
       toolCallName: 'searchProducts',
       toolName: 'searchProducts',
-      parentMessageId: messageId,
+      parentMessageId: input.messageId,
     },
     {
       type: EventType.TOOL_CALL_ARGS,
@@ -52,11 +52,11 @@ const chunksFor = (input: FakeStreamInput): Array<StreamChunk> => {
     },
     {
       type: EventType.TEXT_MESSAGE_START,
-      messageId,
+      messageId: input.messageId,
       role: 'assistant',
     },
     ...textEvents,
-    { type: EventType.TEXT_MESSAGE_END, messageId },
+    { type: EventType.TEXT_MESSAGE_END, messageId: input.messageId },
     {
       type: EventType.RUN_FINISHED,
       threadId: input.threadId,
@@ -71,6 +71,7 @@ export const createFakeAiStream = (
   input: FakeStreamInput,
   onComplete: () => Promise<void>,
   onFailure: () => Promise<void>,
+  isCancelled: () => Promise<boolean>,
 ): AsyncIterable<StreamChunk> => {
   const chunks = chunksFor(input);
   let index = 0;
@@ -80,6 +81,10 @@ export const createFakeAiStream = (
       next: async (): Promise<IteratorResult<StreamChunk>> => {
         try {
           if (index >= chunks.length) return { done: true, value: undefined };
+          if (await isCancelled()) {
+            terminalized = true;
+            return { done: true, value: undefined };
+          }
           if (index === chunks.length - 1 && !terminalized) {
             await onComplete();
             terminalized = true;
