@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parsePersistedOperationManifest } from '../graphql/persisted-operation-manifest.js';
 
 const environmentSchema = z
   .object({
@@ -14,6 +15,9 @@ const environmentSchema = z
     AWS_REGION: z.string().default('ap-northeast-2'),
     AWS_ENDPOINT_URL: z.url().optional(),
     ASSET_BUCKET: z.string().default('shopport-assets'),
+    RAW_ASSET_BUCKET: z.string().optional(),
+    NORMALIZED_ASSET_BUCKET: z.string().optional(),
+    ARCHIVE_BUCKET: z.string().optional(),
     ASSET_CDN_HOST: z.string().default('localhost'),
     CLOUDFRONT_KEY_PAIR_ID: z.string().optional(),
     CLOUDFRONT_PRIVATE_KEY: z.string().optional(),
@@ -65,24 +69,17 @@ const environmentSchema = z
     }
     if (environment.PERSISTED_OPERATION_MANIFEST.trim().length > 0) {
       try {
-        const manifest: unknown = JSON.parse(
+        const manifest = parsePersistedOperationManifest(
           environment.PERSISTED_OPERATION_MANIFEST,
         );
-        const valid =
-          typeof manifest === 'object' &&
-          manifest !== null &&
-          !Array.isArray(manifest) &&
-          Object.values(manifest).every(
-            (hash) => typeof hash === 'string' && /^[a-f\d]{64}$/u.test(hash),
-          );
-        if (!valid || (production && Object.keys(manifest).length === 0)) {
+        if (production && manifest.size === 0) {
           throw new Error('Invalid manifest');
         }
       } catch {
         context.addIssue({
           code: 'custom',
           message:
-            'Persisted operation manifest must map IDs to SHA-256 hashes',
+            'Persisted operation manifest must map normalized document SHA-256 hashes to matching documents',
           path: ['PERSISTED_OPERATION_MANIFEST'],
         });
       }
@@ -97,6 +94,19 @@ const environmentSchema = z
         message: 'Production requires CloudFront signing credentials',
         path: ['CLOUDFRONT_KEY_PAIR_ID'],
       });
+    }
+    for (const bucket of [
+      'RAW_ASSET_BUCKET',
+      'NORMALIZED_ASSET_BUCKET',
+      'ARCHIVE_BUCKET',
+    ] as const) {
+      if (production && !environment[bucket]?.trim()) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Production requires split storage buckets',
+          path: [bucket],
+        });
+      }
     }
     if (production && environment.APPLE_AUDIENCES.trim().length === 0) {
       context.addIssue({

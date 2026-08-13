@@ -87,12 +87,16 @@ export class ArchiveWriter {
     const encoded = encodeArchive(records);
     const objectKey = `archives/${first.accountId}/${first.conversationId}/${String(first.createdAt.getTime())}-${String(last.createdAt.getTime())}-${uuidv7()}.ndjson.gz`;
     await this.objects.put(
+      'archive',
       objectKey,
       encoded.body,
       'application/x-ndjson',
       encoded.checksum,
     );
-    decodeArchive(await this.objects.get(objectKey), encoded.checksum);
+    decodeArchive(
+      await this.objects.get('archive', objectKey),
+      encoded.checksum,
+    );
     await this.database.transaction(async (transaction) => {
       await transaction.insert(archiveManifests).values({
         id: uuidv7(),

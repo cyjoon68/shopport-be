@@ -1,4 +1,11 @@
+import { createHash } from 'node:crypto';
+import { stripIgnoredCharacters } from 'graphql';
 import { validateEnvironment } from './environment.js';
+
+const persistedDocument = 'query Viewer { viewer { id } }';
+const persistedDocumentHash = createHash('sha256')
+  .update(stripIgnoredCharacters(persistedDocument))
+  .digest('hex');
 
 const productionEnvironment = {
   APP_ENV: 'prod',
@@ -10,8 +17,11 @@ const productionEnvironment = {
   AI_MODE: 'approved',
   CATALOG_MODE: 'approved',
   ALLOW_DEMO_AUTH: 'false',
+  RAW_ASSET_BUCKET: 'shopport-production-raw',
+  NORMALIZED_ASSET_BUCKET: 'shopport-production-normalized',
+  ARCHIVE_BUCKET: 'shopport-production-archive',
   PERSISTED_OPERATION_MANIFEST: JSON.stringify({
-    Viewer: 'a'.repeat(64),
+    [persistedDocumentHash]: persistedDocument,
   }),
   CLOUDFRONT_KEY_PAIR_ID: 'K123',
   CLOUDFRONT_PRIVATE_KEY: 'secure-private-key',
@@ -23,12 +33,39 @@ describe('validateEnvironment', () => {
   });
 
   it.each([
+    [
+      'a tampered document',
+      JSON.stringify({
+        [persistedDocumentHash]: 'query Viewer { viewer { displayName } }',
+      }),
+    ],
+    [
+      'a tampered hash key',
+      JSON.stringify({ ['a'.repeat(64)]: persistedDocument }),
+    ],
+    [
+      'a legacy ID-to-hash manifest',
+      JSON.stringify({ Viewer: persistedDocumentHash }),
+    ],
+  ])('rejects %s in the persisted manifest', (_scenario, manifest) => {
+    expect(() =>
+      validateEnvironment({
+        ...productionEnvironment,
+        PERSISTED_OPERATION_MANIFEST: manifest,
+      }),
+    ).toThrow();
+  });
+
+  it.each([
     ['ALLOW_DEMO_AUTH', 'true'],
     ['AI_MODE', 'fake'],
     ['CATALOG_MODE', 'fake'],
     ['JWT_SECRET', 'local-development-secret-32-bytes'],
     ['PERSISTED_OPERATION_MANIFEST', ''],
     ['CLOUDFRONT_PRIVATE_KEY', ''],
+    ['RAW_ASSET_BUCKET', ''],
+    ['NORMALIZED_ASSET_BUCKET', ''],
+    ['ARCHIVE_BUCKET', ''],
   ])('rejects unsafe production %s', (key, value) => {
     expect(() =>
       validateEnvironment({ ...productionEnvironment, [key]: value }),

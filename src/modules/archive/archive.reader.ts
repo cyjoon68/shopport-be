@@ -39,7 +39,7 @@ export class ArchiveReader {
       manifests.map(async (manifest) => ({
         conversationId: manifest.conversationId,
         records: decodeArchive(
-          await this.objects.get(manifest.objectKey),
+          await this.objects.get('archive', manifest.objectKey),
           manifest.checksum,
         ),
       })),

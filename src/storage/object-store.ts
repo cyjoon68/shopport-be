@@ -9,17 +9,19 @@ import {
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Environment } from '../config/environment.js';
+import { storageBucketsFromConfig } from './storage-buckets.js';
+import type { StorageBucket, StorageBuckets } from './storage-buckets.js';
 
 const localCredentials = { accessKeyId: 'test', secretAccessKey: 'test' };
 
 @Injectable()
 export class ObjectStore {
   readonly #s3: S3Client;
-  readonly #bucket: string;
+  readonly #buckets: StorageBuckets;
 
   public constructor(config: ConfigService<Environment, true>) {
     const endpoint = config.get('AWS_ENDPOINT_URL', { infer: true });
-    this.#bucket = config.get('ASSET_BUCKET', { infer: true });
+    this.#buckets = storageBucketsFromConfig(config);
     this.#s3 = new S3Client({
       region: config.get('AWS_REGION', { infer: true }),
       ...(endpoint
@@ -29,6 +31,7 @@ export class ObjectStore {
   }
 
   public put = async (
+    bucket: StorageBucket,
     key: string,
     body: Buffer,
     contentType: string,
@@ -36,7 +39,7 @@ export class ObjectStore {
   ): Promise<void> => {
     await this.#s3.send(
       new PutObjectCommand({
-        Bucket: this.#bucket,
+        Bucket: this.#buckets[bucket],
         Key: key,
         Body: body,
         ContentType: contentType,
@@ -46,26 +49,32 @@ export class ObjectStore {
     );
   };
 
-  public get = async (key: string): Promise<Buffer> => {
+  public get = async (bucket: StorageBucket, key: string): Promise<Buffer> => {
     const object = await this.#s3.send(
-      new GetObjectCommand({ Bucket: this.#bucket, Key: key }),
+      new GetObjectCommand({ Bucket: this.#buckets[bucket], Key: key }),
     );
-    if (!object.Body) throw new Error(`S3 object has no body: ${key}`);
+    if (!object.Body) throw new Error('S3 object has no body');
     return Buffer.from(await object.Body.transformToByteArray());
   };
 
-  public deleteKey = async (key: string): Promise<void> => {
+  public deleteKey = async (
+    bucket: StorageBucket,
+    key: string,
+  ): Promise<void> => {
     await this.#s3.send(
-      new DeleteObjectCommand({ Bucket: this.#bucket, Key: key }),
+      new DeleteObjectCommand({ Bucket: this.#buckets[bucket], Key: key }),
     );
   };
 
-  public deletePrefix = async (prefix: string): Promise<void> => {
+  public deletePrefix = async (
+    bucket: StorageBucket,
+    prefix: string,
+  ): Promise<void> => {
     let continuationToken: string | undefined;
     do {
       const page = await this.#s3.send(
         new ListObjectsV2Command({
-          Bucket: this.#bucket,
+          Bucket: this.#buckets[bucket],
           Prefix: prefix,
           ...(continuationToken
             ? { ContinuationToken: continuationToken }
@@ -78,7 +87,7 @@ export class ObjectStore {
       if (objects.length > 0) {
         await this.#s3.send(
           new DeleteObjectsCommand({
-            Bucket: this.#bucket,
+            Bucket: this.#buckets[bucket],
             Delete: { Objects: objects, Quiet: true },
           }),
         );

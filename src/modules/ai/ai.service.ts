@@ -1,12 +1,13 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { StreamChunk } from '@tanstack/ai';
 import { v7 as uuidv7 } from 'uuid';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { AiRepository } from './ai.repository.js';
 import { parseAiRequest } from './ai-request.js';
-import { createFakeAiStream } from './fake-ai.stream.js';
 import { RedisRunCancellation } from './redis-run-cancellation.js';
 import { AiTools } from './ai-tools.js';
+import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
+import type { AiStreamAdapter } from './ai-stream.adapter.js';
 
 @Injectable()
 export class AiService {
@@ -14,6 +15,7 @@ export class AiService {
     private readonly repository: AiRepository,
     private readonly tools: AiTools,
     private readonly cancellation: RedisRunCancellation,
+    @Inject(AI_STREAM_ADAPTER) private readonly stream: AiStreamAdapter,
   ) {}
 
   public start = async (
@@ -49,7 +51,7 @@ export class AiService {
         ? '조건에 맞는 상품을 가격과 배송 기준으로 정리했어요. 카드를 눌러 상세 조건을 확인해 보세요.'
         : '조건에 맞는 상품을 찾지 못했어요. 용도나 예산을 조금 더 알려주세요.';
     const assistantMessageId = uuidv7();
-    return createFakeAiStream(
+    return this.stream.createStream(
       {
         threadId: request.threadId,
         runId: request.runId,
@@ -57,16 +59,18 @@ export class AiService {
         message: answer,
         products,
       },
-      () =>
-        this.repository.completeRun(
-          request.runId,
-          request.threadId,
-          assistantMessageId,
-          answer,
-          result.items.map(({ id }) => id),
-        ),
-      () => this.repository.failRun(request.runId),
-      () => this.cancellation.isCancelled(request.runId),
+      {
+        onComplete: () =>
+          this.repository.completeRun(
+            request.runId,
+            request.threadId,
+            assistantMessageId,
+            answer,
+            result.items.map(({ id }) => id),
+          ),
+        onFailure: () => this.repository.failRun(request.runId),
+        isCancelled: () => this.cancellation.isCancelled(request.runId),
+      },
     );
   };
 

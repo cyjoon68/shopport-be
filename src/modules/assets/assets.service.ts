@@ -5,6 +5,7 @@ import { getSignedUrl as getCloudFrontSignedUrl } from '@aws-sdk/cloudfront-sign
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v7 as uuidv7 } from 'uuid';
 import type { Environment } from '../../config/environment.js';
+import { storageBucketsFromConfig } from '../../storage/storage-buckets.js';
 import { AssetsRepository } from './assets.repository.js';
 import type { AssetRecord } from './assets.repository.js';
 
@@ -31,12 +32,14 @@ export type AssetUploadGraphql = Readonly<{
 @Injectable()
 export class AssetsService {
   readonly #s3: S3Client;
+  readonly #rawBucket: string;
 
   public constructor(
     private readonly repository: AssetsRepository,
     private readonly config: ConfigService<Environment, true>,
   ) {
     const endpoint = config.get('AWS_ENDPOINT_URL', { infer: true });
+    this.#rawBucket = storageBucketsFromConfig(config).raw;
     this.#s3 = new S3Client({
       region: config.get('AWS_REGION', { infer: true }),
       ...(endpoint
@@ -45,12 +48,12 @@ export class AssetsService {
     });
   }
 
-  public async createUpload(input: {
+  public createUpload = async (input: {
     accountId: string;
     conversationId: string;
     contentType: string;
     byteSize: number;
-  }): Promise<AssetUploadGraphql> {
+  }): Promise<AssetUploadGraphql> => {
     if (
       !(await this.repository.ownsConversation(
         input.accountId,
@@ -65,7 +68,7 @@ export class AssetsService {
     const uploadUrl = await getSignedUrl(
       this.#s3,
       new PutObjectCommand({
-        Bucket: this.config.get('ASSET_BUCKET', { infer: true }),
+        Bucket: this.#rawBucket,
         Key: originalKey,
         ContentType: input.contentType,
         ContentLength: input.byteSize,
@@ -81,15 +84,15 @@ export class AssetsService {
         { name: 'x-amz-server-side-encryption', value: 'aws:kms' },
       ],
     };
-  }
+  };
 
-  public async find(
+  public find = async (
     accountId: string,
     id: string,
-  ): Promise<AssetGraphql | null> {
+  ): Promise<AssetGraphql | null> => {
     const asset = await this.repository.findOwned(accountId, id);
     return asset ? this.toGraphql(asset) : null;
-  }
+  };
 
   public delete = (accountId: string, id: string): Promise<boolean> =>
     this.repository.delete(accountId, id);
