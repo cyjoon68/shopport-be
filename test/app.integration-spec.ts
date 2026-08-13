@@ -9,7 +9,7 @@ import { Pool } from 'pg';
 import request from 'supertest';
 import { GenericContainer } from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
-import { v7 as uuidv7 } from 'uuid';
+import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
@@ -263,6 +263,16 @@ describe('Shopport API vertical flow', () => {
 
     completedRunId = uuidv7();
     const userMessageId = uuidv7();
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({
+        threadId: conversationId,
+        runId: uuidv7(),
+        messages: [{ id: uuidv4(), role: 'user', content: '거부 대상' }],
+        forwardedProps: {},
+      })
+      .expect(400);
     const chatResponse = await request(baseUrl)
       .post('/v1/ai/chat')
       .set('authorization', `Bearer ${accessToken}`)

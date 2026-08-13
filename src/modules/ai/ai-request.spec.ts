@@ -1,4 +1,4 @@
-import { v7 as uuidv7 } from 'uuid';
+import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { parseAiRequest } from './ai-request.js';
 
 const requestFor = (messages: ReadonlyArray<unknown>): unknown => ({
@@ -27,6 +27,14 @@ describe('parseAiRequest', () => {
     expect(() =>
       parseAiRequest(
         requestFor([{ id: 'not-a-uuid', role: 'system', content: '요청' }]),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects a v4 ID for the final persisted user message', () => {
+    expect(() =>
+      parseAiRequest(
+        requestFor([{ id: uuidv4(), role: 'user', content: '요청' }]),
       ),
     ).toThrow();
   });

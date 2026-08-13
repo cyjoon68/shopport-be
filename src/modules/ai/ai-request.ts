@@ -45,6 +45,7 @@ export const parseAiRequest = (body: unknown): AiRequest => {
   if (userMessage?.role !== 'user') {
     throw new AiRequestValidationError('AI turn must end with a user message');
   }
+  const userMessageId = z.uuidv7().parse(userMessage.id);
   const assetIdValue = parsed.forwardedProps.assetId;
   const assetId =
     assetIdValue === undefined || assetIdValue === null
@@ -57,7 +58,7 @@ export const parseAiRequest = (body: unknown): AiRequest => {
   const request = {
     threadId: parsed.threadId,
     runId: parsed.runId,
-    userMessageId: userMessage.id,
+    userMessageId,
     text,
     assetId,
   };
