@@ -7,6 +7,7 @@ import type { CatalogProduct } from '../catalog/types.js';
 import type { AiStreamResult } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import { CommandCodeAiStreamAdapter } from './command-code-ai.adapter.js';
+import { askUserSchema } from './command-code-ai.adapter.js';
 
 const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',
@@ -71,6 +72,187 @@ const requiredCall = (
 };
 
 describe('CommandCodeAiStreamAdapter', () => {
+  it('validates structured askUser arguments', () => {
+    expect(
+      askUserSchema.parse({
+        question: '예산은 어느 정도인가요?',
+        options: [
+          { id: 'under-3', label: '3만원 이하' },
+          { id: 'under-5', label: '5만원 이하' },
+        ],
+        allowFreeText: true,
+      }).question,
+    ).toBe('예산은 어느 정도인가요?');
+    expect(() =>
+      askUserSchema.parse({
+        question: '가'.repeat(161),
+        options: [
+          { id: 'same', label: '작은 크기' },
+          { id: 'same', label: '큰 크기' },
+        ],
+        allowFreeText: false,
+      }),
+    ).toThrow();
+    expect(() =>
+      askUserSchema.parse({
+        question: '크기는요?',
+        options: [{ id: 'one', label: '작은 크기' }],
+        allowFreeText: false,
+      }),
+    ).toThrow();
+  });
+
+  it('passes trusted history to the provider in order', async () => {
+    const providerFetch = jest
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        streamResponse([
+          completionChunk(
+            'chatcmpl-history',
+            { role: 'assistant', content: '5만원 기준으로 찾아볼게요.' },
+            null,
+          ),
+          completionChunk('chatcmpl-history', {}, 'stop'),
+        ]),
+      );
+    const config = new ConfigService<Environment, true>({
+      COMMAND_CODE_API_KEY: 'key',
+      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
+      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+    });
+    const tools: AiToolSession = {
+      searchProducts: () =>
+        Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+      getProduct: () => Promise.resolve(null),
+      compareProducts: () => Promise.resolve([]),
+    };
+    for await (const _chunk of new CommandCodeAiStreamAdapter(
+      config,
+      providerFetch,
+    ).createStream(
+      {
+        threadId: '0198a122-0c00-7000-8000-000000000010',
+        runId: '0198a122-0c00-7000-8000-000000000011',
+        text: '5만원 이하',
+        history: [
+          { role: 'user', text: '텀블러를 추천해줘' },
+          { role: 'assistant', text: '예산은 어느 정도인가요?' },
+          { role: 'user', text: '5만원 이하' },
+        ],
+        image: null,
+      },
+      tools,
+      {
+        onComplete: () => Promise.resolve(),
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(false),
+      },
+    ))
+      void _chunk;
+    const body = JSON.parse(
+      await requestBody(requiredCall(providerFetch.mock.calls, 0)),
+    ) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages.slice(-3)).toEqual([
+      expect.objectContaining({ role: 'user', content: '텀블러를 추천해줘' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: '예산은 어느 정도인가요?',
+      }),
+      expect.objectContaining({ role: 'user', content: '5만원 이하' }),
+    ]);
+  });
+
+  it('finishes an askUser-only turn without running product search', async () => {
+    const providerFetch = jest.fn<typeof fetch>().mockResolvedValue(
+      streamResponse([
+        completionChunk(
+          'chatcmpl-question',
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call-question',
+                type: 'function',
+                function: {
+                  name: 'askUser',
+                  arguments: JSON.stringify({
+                    question: '예산은 어느 정도인가요?',
+                    options: [
+                      { id: 'under-3', label: '3만원 이하' },
+                      { id: 'under-5', label: '5만원 이하' },
+                    ],
+                    allowFreeText: true,
+                  }),
+                },
+              },
+            ],
+          },
+          null,
+        ),
+        completionChunk('chatcmpl-question', {}, 'tool_calls'),
+      ]),
+    );
+    const config = new ConfigService<Environment, true>({
+      COMMAND_CODE_API_KEY: 'key',
+      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
+      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+    });
+    const searchProducts = jest.fn(() =>
+      Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+    );
+    const completed: Array<AiStreamResult> = [];
+    const chunks: Array<StreamChunk> = [];
+    const tools: AiToolSession = {
+      searchProducts,
+      getProduct: () => Promise.resolve(null),
+      compareProducts: () => Promise.resolve([]),
+    };
+    for await (const chunk of new CommandCodeAiStreamAdapter(
+      config,
+      providerFetch,
+    ).createStream(
+      {
+        threadId: '0198a122-0c00-7000-8000-000000000010',
+        runId: '0198a122-0c00-7000-8000-000000000011',
+        text: '텀블러 추천해줘',
+        image: null,
+      },
+      tools,
+      {
+        onComplete: (result) => {
+          completed.push(result);
+          return Promise.resolve();
+        },
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(false),
+      },
+    )) {
+      chunks.push(chunk);
+    }
+    expect(searchProducts).not.toHaveBeenCalled();
+    expect(providerFetch).toHaveBeenCalledTimes(1);
+    expect(chunks.map(({ type }) => type)).toEqual(
+      expect.arrayContaining([
+        EventType.TOOL_CALL_START,
+        EventType.TOOL_CALL_ARGS,
+        EventType.TOOL_CALL_END,
+        EventType.RUN_FINISHED,
+      ]),
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(
+      chunks.flatMap((chunk) =>
+        chunk.type === EventType.TOOL_CALL_START ? [chunk.parentMessageId] : [],
+      ),
+    ).toContain(completed[0]?.messageId);
+    expect(completed[0]?.text).toBe('');
+    expect(completed[0]?.productIds).toEqual([]);
+    expect(completed[0]?.askUser?.question).toBe('예산은 어느 정도인가요?');
+  });
   it('streams a ZDR multimodal tool run and persists the final response', async () => {
     const providerFetch = jest
       .fn<typeof fetch>()
@@ -182,6 +364,11 @@ describe('CommandCodeAiStreamAdapter', () => {
         productIds: [product.id],
       }),
     ]);
+    expect(
+      chunks.flatMap((chunk) =>
+        chunk.type === EventType.TEXT_MESSAGE_START ? [chunk.messageId] : [],
+      ),
+    ).toContain(completed[0]?.messageId);
     expect(onFailure).not.toHaveBeenCalled();
   });
 

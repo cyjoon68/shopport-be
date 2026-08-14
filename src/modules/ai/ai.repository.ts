@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
 import type { Database } from '../../database/database.module.js';
@@ -19,6 +19,7 @@ import {
   messages,
 } from '../../database/schema.js';
 import { AiAccessError } from './ai.errors.js';
+import type { AiHistoryMessage, AskUser } from './ai-stream.adapter.js';
 import { getKstUsageDate, reserveQuota } from './quota.js';
 
 type BeginRunInput = Readonly<{
@@ -204,6 +205,7 @@ export class AiRepository {
     messageId: string,
     text: string,
     productIds: ReadonlyArray<string>,
+    askUser: AskUser | null,
   ): Promise<void> =>
     this.database.transaction(async (transaction) => {
       const updated = await transaction
@@ -219,24 +221,116 @@ export class AiRepository {
         runId,
         status: 'completed',
       });
-      const parts = [
-        {
+      const parts: Array<NewMessagePart> = [];
+      if (text.length > 0) {
+        parts.push({
           id: uuidv7(),
           messageId,
           kind: 'text',
-          position: 0,
+          position: parts.length,
           payload: { text },
-        },
+        });
+      }
+      if (askUser) {
+        parts.push({
+          id: uuidv7(),
+          messageId,
+          kind: 'ask_user',
+          position: parts.length,
+          payload: askUser,
+        });
+      }
+      const productPosition = parts.length;
+      parts.push(
         ...productIds.map((productId, index) => ({
           id: uuidv7(),
           messageId,
           kind: 'product_reference',
-          position: index + 1,
+          position: productPosition + index,
           payload: { productId },
         })),
-      ];
+      );
       await transaction.insert(messageParts).values(parts);
     });
+
+  public conversationHistory = async (
+    accountId: string,
+    conversationId: string,
+  ): Promise<ReadonlyArray<AiHistoryMessage>> => {
+    const recentMessages = this.database
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(
+        conversations,
+        and(
+          eq(conversations.id, messages.conversationId),
+          eq(conversations.accountId, accountId),
+        ),
+      )
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          eq(messages.status, 'completed'),
+        ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(12)
+      .as('recent_messages');
+    const rows = await this.database
+      .select({
+        messageId: messages.id,
+        role: messages.role,
+        kind: messageParts.kind,
+        position: messageParts.position,
+        payload: messageParts.payload,
+      })
+      .from(recentMessages)
+      .innerJoin(messages, eq(messages.id, recentMessages.id))
+      .innerJoin(messageParts, eq(messageParts.messageId, messages.id))
+      .where(
+        or(eq(messageParts.kind, 'text'), eq(messageParts.kind, 'ask_user')),
+      )
+      .orderBy(messages.createdAt, messages.id, messageParts.position);
+    const grouped = new Map<string, AiHistoryMessage>();
+    for (const row of rows) {
+      if (row.role !== 'user' && row.role !== 'assistant') continue;
+      let text = '';
+      if (row.kind === 'text') {
+        const payload = row.payload as { text?: unknown };
+        if (typeof payload.text === 'string') text = payload.text;
+      }
+      if (row.kind === 'ask_user') {
+        const payload = row.payload as {
+          question?: unknown;
+          options?: Array<{ label?: unknown }>;
+        };
+        if (typeof payload.question === 'string') {
+          const labels = Array.isArray(payload.options)
+            ? payload.options
+                .map(({ label }) => (typeof label === 'string' ? label : ''))
+                .filter(Boolean)
+                .join(', ')
+            : '';
+          text = `${payload.question}${labels ? ` 선택지: ${labels}` : ''}`;
+        }
+      }
+      if (!text) continue;
+      const previous = grouped.get(row.messageId);
+      grouped.set(row.messageId, {
+        role: row.role,
+        text: previous ? `${previous.text}\n${text}` : text,
+      });
+    }
+    const bounded: Array<AiHistoryMessage> = [];
+    let characters = 0;
+    for (const message of [...grouped.values()].reverse()) {
+      if (bounded.length >= 12 || characters + message.text.length > 8_000)
+        break;
+      bounded.unshift(message);
+      characters += message.text.length;
+    }
+    return bounded;
+  };
 
   public failRun = (runId: string): Promise<void> =>
     this.database.transaction(async (transaction) => {
