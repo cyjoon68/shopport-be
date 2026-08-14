@@ -96,6 +96,7 @@ export const createFakeAiStream = (
       messageId,
       text: message,
       productIds: result.items.map(({ id }) => id),
+      askUser: null,
     };
   };
   return {

@@ -10,6 +10,11 @@ import type {
 
 const textPayload = z.object({ text: z.string() });
 const productPayload = z.object({ productId: z.uuid() });
+const askUserPayload = z.object({
+  question: z.string(),
+  options: z.array(z.object({ id: z.string(), label: z.string() })),
+  allowFreeText: z.boolean(),
+});
 const toolPayload = z.object({
   toolName: z.string(),
   status: z.enum(['STARTED', 'COMPLETED', 'FAILED']),
@@ -43,6 +48,12 @@ const mapPart = async (
           id: part.id,
           product: toProductGraphql(product),
         }
+      : null;
+  }
+  if (part.kind === 'ask_user') {
+    const payload = askUserPayload.safeParse(part.payload);
+    return payload.success
+      ? { __typename: 'AskUserMessagePart', id: part.id, ...payload.data }
       : null;
   }
   if (part.kind === 'tool_status') {

@@ -87,6 +87,26 @@ type TextMessagePart {
   text: String!
 }
 
+"A selectable answer to an assistant question."
+type AskUserOption {
+  "The stable option identifier."
+  id: String!
+  "The short Korean label shown to the user."
+  label: String!
+}
+
+"A structured question waiting for the user's next turn."
+type AskUserMessagePart {
+  "The part identifier."
+  id: UUID!
+  "The question shown to the user."
+  question: String!
+  "Two to four selectable answers."
+  options: [AskUserOption!]!
+  "Whether the user may provide an answer outside the options."
+  allowFreeText: Boolean!
+}
+
 "An image message part."
 type ImageMessagePart {
   "The part identifier."
@@ -116,6 +136,7 @@ type ToolStatusMessagePart {
 "A structured part of a message."
 union MessagePart =
   | TextMessagePart
+  | AskUserMessagePart
   | ImageMessagePart
   | ProductReferenceMessagePart
   | ToolStatusMessagePart
