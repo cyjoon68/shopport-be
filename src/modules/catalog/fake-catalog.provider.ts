@@ -64,6 +64,20 @@ const products = [
     freshnessEpochMs: 1_786_460_100_000,
     outboundUrl: 'https://example.com/products/stand',
   },
+  {
+    id: '0198a122-0c00-7000-8000-000000000005',
+    providerId: 'fake',
+    title: '노이즈 캔슬링 무선 이어폰',
+    imageUrl: 'https://picsum.photos/seed/shopport-earbuds/800/800',
+    affiliate: true,
+    relevanceBucket: 3,
+    inStock: true,
+    totalAmountMinor: '89900',
+    deliveryEstimateDays: 1,
+    ratingConfidence: 0.93,
+    freshnessEpochMs: 1_786_460_500_000,
+    outboundUrl: 'https://example.com/products/earbuds',
+  },
 ] as const satisfies ReadonlyArray<CatalogProduct>;
 
 const encodeCursor = (id: string): string =>

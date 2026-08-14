@@ -15,6 +15,7 @@ import type {
   StreamChunk,
 } from '@tanstack/ai';
 import { openaiCompatibleText } from '@tanstack/ai-openai/compatible';
+import { v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 import type { Environment } from '../../config/environment.js';
 import { toAiProductResult } from './ai-tool-result.js';
@@ -139,8 +140,8 @@ const createLifecycleMiddleware = (
   terminal: TerminalState,
   productIds: ReadonlySet<string>,
   askUserState: () => AskUser | null,
+  assistantMessageId: string,
 ): ChatMiddleware => {
-  let messageId: string | null = null;
   let cancellationInterval: NodeJS.Timeout | undefined;
   let timeout: NodeJS.Timeout | undefined;
   let pollPending = false;
@@ -182,32 +183,17 @@ const createLifecycleMiddleware = (
       timeout.unref();
       pollCancellation();
     },
-    onChunk: (_context, chunk): void => {
-      if (chunk.type === EventType.TEXT_MESSAGE_START) {
-        messageId = chunk.messageId;
-      }
-      if (
-        chunk.type === EventType.TOOL_CALL_START &&
-        chunk.toolCallName === 'askUser'
-      ) {
-        messageId = chunk.parentMessageId ?? null;
-      }
-    },
     onShouldContinue: (): boolean => askUserState() === null,
     onFinish: async (_context, info): Promise<void> => {
       stop();
       const text = info.content.trim();
       const askUser = askUserState();
-      const finalMessageId = messageId;
-      if (
-        !finalMessageId ||
-        (!askUser && (info.finishReason !== 'stop' || text.length === 0))
-      ) {
+      if (!askUser && (info.finishReason !== 'stop' || text.length === 0)) {
         await terminal.fail();
         throw new Error('Command Code returned an incomplete response');
       }
       await terminal.complete({
-        messageId: finalMessageId,
+        messageId: assistantMessageId,
         text,
         productIds: askUser ? [] : [...productIds],
         askUser,
@@ -268,6 +254,7 @@ const createPublicStream = (
   input: AiStreamInput,
   abortController: AbortController,
   terminal: TerminalState,
+  assistantMessageId: string,
 ): AsyncIterable<StreamChunk> => {
   const iterator = source[Symbol.asyncIterator]();
   let sourceDone = false;
@@ -312,7 +299,25 @@ const createPublicStream = (
             if (runStarted) continue;
             runStarted = true;
           }
-          if (isVisibleChunk(chunk)) return { done: false, value: chunk };
+          if (isVisibleChunk(chunk)) {
+            if (
+              chunk.type === EventType.TEXT_MESSAGE_START ||
+              chunk.type === EventType.TEXT_MESSAGE_CONTENT ||
+              chunk.type === EventType.TEXT_MESSAGE_END
+            ) {
+              return {
+                done: false,
+                value: { ...chunk, messageId: assistantMessageId },
+              };
+            }
+            if (chunk.type === EventType.TOOL_CALL_START) {
+              return {
+                done: false,
+                value: { ...chunk, parentMessageId: assistantMessageId },
+              };
+            }
+            return { done: false, value: chunk };
+          }
         }
       },
       return: async (): Promise<IteratorResult<StreamChunk>> => {
@@ -360,6 +365,7 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
     }
     const productIds = new Set<string>();
     const abortController = new AbortController();
+    const assistantMessageId = uuidv7();
     let askUser: AskUser | null = null;
     const commandCodeTools = this.createTools(tools, productIds, (value) => {
       askUser = value;
@@ -393,11 +399,18 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
           terminal,
           productIds,
           () => askUser,
+          assistantMessageId,
         ),
       ],
       debug: false,
     });
-    return createPublicStream(source, input, abortController, terminal);
+    return createPublicStream(
+      source,
+      input,
+      abortController,
+      terminal,
+      assistantMessageId,
+    );
   };
 
   private readonly modelMessages = (input: AiStreamInput): ModelMessage[] => {

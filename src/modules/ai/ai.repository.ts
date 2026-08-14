@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
 import type { Database } from '../../database/database.module.js';
@@ -257,14 +257,8 @@ export class AiRepository {
     accountId: string,
     conversationId: string,
   ): Promise<ReadonlyArray<AiHistoryMessage>> => {
-    const rows = await this.database
-      .select({
-        messageId: messages.id,
-        role: messages.role,
-        kind: messageParts.kind,
-        position: messageParts.position,
-        payload: messageParts.payload,
-      })
+    const recentMessages = this.database
+      .select({ id: messages.id })
       .from(messages)
       .innerJoin(
         conversations,
@@ -273,12 +267,28 @@ export class AiRepository {
           eq(conversations.accountId, accountId),
         ),
       )
-      .innerJoin(messageParts, eq(messageParts.messageId, messages.id))
       .where(
         and(
           eq(messages.conversationId, conversationId),
           eq(messages.status, 'completed'),
         ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(12)
+      .as('recent_messages');
+    const rows = await this.database
+      .select({
+        messageId: messages.id,
+        role: messages.role,
+        kind: messageParts.kind,
+        position: messageParts.position,
+        payload: messageParts.payload,
+      })
+      .from(recentMessages)
+      .innerJoin(messages, eq(messages.id, recentMessages.id))
+      .innerJoin(messageParts, eq(messageParts.messageId, messages.id))
+      .where(
+        or(eq(messageParts.kind, 'text'), eq(messageParts.kind, 'ask_user')),
       )
       .orderBy(messages.createdAt, messages.id, messageParts.position);
     const grouped = new Map<string, AiHistoryMessage>();

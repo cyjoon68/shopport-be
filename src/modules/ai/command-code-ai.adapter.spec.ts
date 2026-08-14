@@ -241,6 +241,14 @@ describe('CommandCodeAiStreamAdapter', () => {
       ]),
     );
     expect(completed).toHaveLength(1);
+    expect(completed[0]?.messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(
+      chunks.flatMap((chunk) =>
+        chunk.type === EventType.TOOL_CALL_START ? [chunk.parentMessageId] : [],
+      ),
+    ).toContain(completed[0]?.messageId);
     expect(completed[0]?.text).toBe('');
     expect(completed[0]?.productIds).toEqual([]);
     expect(completed[0]?.askUser?.question).toBe('예산은 어느 정도인가요?');
@@ -356,6 +364,11 @@ describe('CommandCodeAiStreamAdapter', () => {
         productIds: [product.id],
       }),
     ]);
+    expect(
+      chunks.flatMap((chunk) =>
+        chunk.type === EventType.TEXT_MESSAGE_START ? [chunk.messageId] : [],
+      ),
+    ).toContain(completed[0]?.messageId);
     expect(onFailure).not.toHaveBeenCalled();
   });
 
