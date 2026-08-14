@@ -35,6 +35,10 @@ export class AiService {
     await this.repository.heartbeatRun(request.runId);
     try {
       const tools = this.tools.createSession();
+      const history = await this.repository.conversationHistory(
+        accountId,
+        request.threadId,
+      );
       const image =
         request.assetId && this.stream.requiresImageData
           ? await this.assets.readNormalizedImage(accountId, request.assetId)
@@ -44,6 +48,7 @@ export class AiService {
           threadId: request.threadId,
           runId: request.runId,
           text: request.text,
+          history,
           image,
         },
         tools,
@@ -55,6 +60,7 @@ export class AiService {
               result.messageId,
               result.text,
               result.productIds,
+              result.askUser,
             ),
           onFailure: () => this.repository.failRun(request.runId),
           isCancelled: () => this.cancellation.isCancelled(request.runId),

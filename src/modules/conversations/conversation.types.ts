@@ -36,6 +36,13 @@ export type MessagePartGraphql =
       }>;
     }>
   | Readonly<{
+      __typename: 'AskUserMessagePart';
+      id: string;
+      question: string;
+      options: ReadonlyArray<Readonly<{ id: string; label: string }>>;
+      allowFreeText: boolean;
+    }>
+  | Readonly<{
       __typename: 'ProductReferenceMessagePart';
       id: string;
       product: unknown;

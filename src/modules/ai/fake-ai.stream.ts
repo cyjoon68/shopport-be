@@ -18,11 +18,13 @@ const chunksFor = (
   productResult: ReturnType<typeof toAiProductResult>,
 ): Array<StreamChunk> => {
   const textChunks = message.match(/.{1,18}/gu) ?? [message];
-  const textEvents = textChunks.map((delta): StreamChunk => ({
-    type: EventType.TEXT_MESSAGE_CONTENT,
-    messageId,
-    delta,
-  }));
+  const textEvents = textChunks.map(
+    (delta): StreamChunk => ({
+      type: EventType.TEXT_MESSAGE_CONTENT,
+      messageId,
+      delta,
+    }),
+  );
   return [
     {
       type: EventType.RUN_STARTED,
@@ -96,6 +98,7 @@ export const createFakeAiStream = (
       messageId,
       text: message,
       productIds: result.items.map(({ id }) => id),
+      askUser: null,
     };
   };
   return {
