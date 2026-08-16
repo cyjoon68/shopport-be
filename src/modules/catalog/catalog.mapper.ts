@@ -20,7 +20,7 @@ export type ProductGraphql = Readonly<{
 }>;
 
 const providerNames: Readonly<Record<string, string>> = {
-  fake: 'Shopport 데모',
+  oliveyoung: '올리브영',
   coupang: '쿠팡',
   daiso: '다이소',
   naver: '네이버 쇼핑',

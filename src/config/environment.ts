@@ -44,7 +44,7 @@ const environmentSchema = z
       .min(128)
       .max(2_048)
       .default(512),
-    CATALOG_MODE: z.enum(['fake', 'approved']).default('fake'),
+    CATALOG_MODE: z.enum(['fake', 'approved']).default('approved'),
     ALLOW_DEMO_AUTH: z.stringbool().default(true),
     PERSISTED_OPERATION_MANIFEST: z.string().default(''),
   })
