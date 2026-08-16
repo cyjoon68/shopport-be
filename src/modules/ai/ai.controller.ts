@@ -20,18 +20,23 @@ import { REDIS } from '../../redis/redis.module.js';
 import type { RedisClient } from '../../redis/redis.module.js';
 import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { AiAccessError } from './ai.errors.js';
-import { AiRequestValidationError, parseRunReference } from './ai-request.js';
+import {
+  AiRequestValidationError,
+  parseRunReference,
+  runIdSchema,
+  storageRunIdFor,
+} from './ai-request.js';
 import { AiService } from './ai.service.js';
 import { RedisStreamDurability } from './redis-stream-durability.js';
 
 const resumeQuerySchema = z.object({
-  runId: z.uuid(),
+  runId: runIdSchema,
   offset: z.string().min(1),
 });
 
 const cancelSchema = z.strictObject({
   threadId: z.uuid(),
-  runId: z.uuid(),
+  runId: runIdSchema,
 });
 
 const pipeResponse = async (
@@ -76,13 +81,13 @@ export class AiController {
       if (offset !== null) {
         await this.ai.assertOwnedRun(
           viewerIdFrom(request),
-          reference.runId,
+          reference.storageRunId,
           reference.threadId,
         );
       }
       const durability = new RedisStreamDurability(
         this.redis,
-        reference.runId,
+        reference.storageRunId,
         offset,
       );
       const result =
@@ -114,10 +119,11 @@ export class AiController {
     const parsed = resumeQuerySchema.safeParse(query);
     if (!parsed.success)
       throw new BadRequestException('Invalid replay request');
-    await this.ai.assertOwnedRun(viewerIdFrom(request), parsed.data.runId);
+    const storageRunId = storageRunIdFor(parsed.data.runId);
+    await this.ai.assertOwnedRun(viewerIdFrom(request), storageRunId);
     const durability = new RedisStreamDurability(
       this.redis,
-      parsed.data.runId,
+      storageRunId,
       request.header('last-event-id') ?? parsed.data.offset,
     );
     await pipeResponse(resumeHttpResponse({ adapter: durability }), response);

@@ -2,7 +2,7 @@ import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { StreamChunk } from '@tanstack/ai';
 import { AssetsService } from '../assets/assets.service.js';
 import { AiRepository } from './ai.repository.js';
-import { parseAiRequest } from './ai-request.js';
+import { parseAiRequest, storageRunIdFor } from './ai-request.js';
 import { RedisRunCancellation } from './redis-run-cancellation.js';
 import { AiTools } from './ai-tools.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
@@ -26,13 +26,13 @@ export class AiService {
     const began = await this.repository.beginRun({
       accountId,
       conversationId: request.threadId,
-      runId: request.runId,
+      runId: request.storageRunId,
       userMessageId: request.userMessageId,
       text: request.text,
       assetId: request.assetId,
     });
     if (!began) throw new ConflictException('Run already exists');
-    await this.repository.heartbeatRun(request.runId);
+    await this.repository.heartbeatRun(request.storageRunId);
     try {
       const tools = this.tools.createSession();
       const history = await this.repository.conversationHistory(
@@ -55,19 +55,20 @@ export class AiService {
         {
           onComplete: (result) =>
             this.repository.completeRun(
-              request.runId,
+              request.storageRunId,
               request.threadId,
               result.messageId,
               result.text,
               result.productIds,
               result.askUser,
             ),
-          onFailure: () => this.repository.failRun(request.runId),
-          isCancelled: () => this.cancellation.isCancelled(request.runId),
+          onFailure: () => this.repository.failRun(request.storageRunId),
+          isCancelled: () =>
+            this.cancellation.isCancelled(request.storageRunId),
         },
       );
     } catch (error) {
-      await this.repository.failRun(request.runId);
+      await this.repository.failRun(request.storageRunId);
       throw error;
     }
   };
@@ -77,18 +78,23 @@ export class AiService {
     runId: string,
     conversationId?: string,
   ): Promise<void> =>
-    this.repository.assertOwnedRun(accountId, runId, conversationId);
+    this.repository.assertOwnedRun(
+      accountId,
+      storageRunIdFor(runId),
+      conversationId,
+    );
 
   public cancel = async (
     accountId: string,
     conversationId: string,
     runId: string,
   ): Promise<void> => {
+    const storageRunId = storageRunIdFor(runId);
     const result = await this.repository.cancelRun(
       accountId,
       conversationId,
-      runId,
+      storageRunId,
     );
-    if (result !== 'terminal') await this.cancellation.mark(runId);
+    if (result !== 'terminal') await this.cancellation.mark(storageRunId);
   };
 }
