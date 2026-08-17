@@ -11,7 +11,7 @@ import { askUserSchema } from './command-code-ai.adapter.js';
 
 const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',
-  providerId: 'fake',
+  providerId: 'test',
   title: '오래 쓰는 스테인리스 텀블러 600ml',
   imageUrl: 'https://example.com/tumbler.jpg',
   affiliate: false,
@@ -124,7 +124,6 @@ describe('CommandCodeAiStreamAdapter', () => {
       searchProducts: () =>
         Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
       getProduct: () => Promise.resolve(null),
-      compareProducts: () => Promise.resolve([]),
     };
     for await (const _chunk of new CommandCodeAiStreamAdapter(
       config,
@@ -206,7 +205,6 @@ describe('CommandCodeAiStreamAdapter', () => {
     const tools: AiToolSession = {
       searchProducts,
       getProduct: () => Promise.resolve(null),
-      compareProducts: () => Promise.resolve([]),
     };
     for await (const chunk of new CommandCodeAiStreamAdapter(
       config,
@@ -309,7 +307,6 @@ describe('CommandCodeAiStreamAdapter', () => {
     const tools: AiToolSession = {
       searchProducts,
       getProduct: () => Promise.resolve(null),
-      compareProducts: () => Promise.resolve([]),
     };
     const completed: Array<AiStreamResult> = [];
     const onFailure = jest.fn(() => Promise.resolve());
@@ -394,7 +391,6 @@ describe('CommandCodeAiStreamAdapter', () => {
       searchProducts: () =>
         Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
       getProduct: () => Promise.resolve(null),
-      compareProducts: () => Promise.resolve([]),
     };
     const onFailure = jest.fn(() => Promise.resolve());
     const chunks: Array<StreamChunk> = [];

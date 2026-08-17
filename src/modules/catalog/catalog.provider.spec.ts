@@ -1,4 +1,4 @@
-import { RetailCatalogProvider } from './retail-catalog.provider.js';
+import { CatalogProvider } from './catalog.provider.js';
 
 const jsonResponse = (body: unknown): Response =>
   new Response(JSON.stringify(body), {
@@ -6,7 +6,7 @@ const jsonResponse = (body: unknown): Response =>
     status: 200,
   });
 
-describe('RetailCatalogProvider', () => {
+describe('CatalogProvider', () => {
   it('maps Olive Young and Daiso search hits into catalog products', async () => {
     const fetchImpl: typeof fetch = (input) => {
       const url =
@@ -56,7 +56,7 @@ describe('RetailCatalogProvider', () => {
       throw new Error(`Unexpected URL ${url}`);
     };
 
-    const provider = new RetailCatalogProvider();
+    const provider = new CatalogProvider();
     provider.useFetch(fetchImpl);
     const result = await provider.search({
       query: '립밤',

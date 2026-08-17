@@ -7,9 +7,6 @@ type CatalogReader = Pick<CatalogService, 'getProduct' | 'search'>;
 export type AiToolSession = Readonly<{
   searchProducts: (query: string) => Promise<CatalogSearchResult>;
   getProduct: (id: string) => Promise<CatalogProduct | null>;
-  compareProducts: (
-    ids: ReadonlyArray<string>,
-  ) => Promise<ReadonlyArray<CatalogProduct>>;
 }>;
 
 @Injectable()
@@ -32,19 +29,6 @@ export class AiTools {
       getProduct: async (id): Promise<CatalogProduct | null> => {
         count();
         return this.catalog.getProduct(id);
-      },
-      compareProducts: async (ids): Promise<ReadonlyArray<CatalogProduct>> => {
-        count();
-        const uniqueIds = [...new Set(ids)];
-        if (uniqueIds.length < 2 || uniqueIds.length > 4) {
-          throw new Error('compareProducts requires 2 to 4 unique products');
-        }
-        const products = await Promise.all(
-          uniqueIds.map((id) => this.catalog.getProduct(id)),
-        );
-        return products.filter(
-          (product): product is CatalogProduct => product !== null,
-        );
       },
     };
   };

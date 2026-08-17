@@ -1,19 +1,14 @@
-import { createHash } from 'node:crypto';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { JOSEError } from 'jose/errors';
+import type { JWTPayload } from 'jose';
 import type { Environment } from '../../config/environment.js';
 import type { AuthProvider, VerifiedIdentity } from './auth.types.js';
 
-const appleJwks = createRemoteJWKSet(
-  new URL('https://appleid.apple.com/auth/keys'),
-);
 const kakaoJwks = createRemoteJWKSet(
   new URL('https://kauth.kakao.com/.well-known/jwks.json'),
 );
-
-const nonceDigest = (nonce: string): string =>
-  createHash('sha256').update(nonce).digest('hex');
 
 const readStringClaim = (claim: unknown, fallback: string): string =>
   typeof claim === 'string' && claim.length > 0 ? claim : fallback;
@@ -29,41 +24,22 @@ export class ProviderTokenVerifier {
     idToken: string,
     nonce: string,
   ): Promise<VerifiedIdentity> => {
-    if (
-      this.config.get('ALLOW_DEMO_AUTH', { infer: true }) &&
-      idToken === 'demo'
-    ) {
-      return {
-        provider,
-        subject: `demo-${provider}`,
-        displayName:
-          provider === 'apple' ? 'Apple 체험 사용자' : '카카오 체험 사용자',
-        profileImageUrl: null,
-      };
-    }
-
-    const appleAudiences = this.config
-      .get('APPLE_AUDIENCES', { infer: true })
-      .split(',')
-      .map((audience) => audience.trim())
-      .filter((audience) => audience.length > 0);
-    const expectedAudience =
-      provider === 'apple'
-        ? appleAudiences.length > 0
-          ? appleAudiences
-          : this.config.get('APPLE_CLIENT_ID', { infer: true })
-        : this.config.get('KAKAO_NATIVE_APP_KEY', { infer: true });
-    const issuer =
-      provider === 'apple'
-        ? 'https://appleid.apple.com'
-        : 'https://kauth.kakao.com';
-    const keySet = provider === 'apple' ? appleJwks : kakaoJwks;
-    const { payload } = await jwtVerify(idToken, keySet, {
-      issuer,
-      audience: expectedAudience,
+    const expectedAudience = this.config.get('KAKAO_NATIVE_APP_KEY', {
+      infer: true,
     });
-    const expectedNonce = provider === 'apple' ? nonceDigest(nonce) : nonce;
-    if (payload.nonce !== expectedNonce) {
+    let payload: JWTPayload;
+    try {
+      ({ payload } = await jwtVerify(idToken, kakaoJwks, {
+        issuer: 'https://kauth.kakao.com',
+        audience: expectedAudience,
+      }));
+    } catch (error) {
+      if (error instanceof JOSEError) {
+        throw new UnauthorizedException('Invalid identity token');
+      }
+      throw error;
+    }
+    if (payload.nonce !== nonce) {
       throw new UnauthorizedException('Invalid identity nonce');
     }
     if (typeof payload.sub !== 'string' || payload.sub.length === 0) {

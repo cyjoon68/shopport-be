@@ -13,12 +13,8 @@ const productionEnvironment = {
   JWT_SECRET: 'a-secure-production-jwt-secret-value',
   KAKAO_NATIVE_APP_KEY: 'secure-kakao-native-key',
   REVENUECAT_WEBHOOK_SECRET: 'secure-revenuecat-webhook-secret',
-  APPLE_AUDIENCES: 'com.shopport.mobile,com.shopport.web',
-  AI_MODE: 'commandcode',
   COMMAND_CODE_API_KEY: 'command-code-production-api-key',
   COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-  CATALOG_MODE: 'approved',
-  ALLOW_DEMO_AUTH: 'false',
   RAW_ASSET_BUCKET: 'shopport-production-raw',
   NORMALIZED_ASSET_BUCKET: 'shopport-production-normalized',
   ARCHIVE_BUCKET: 'shopport-production-archive',
@@ -30,13 +26,8 @@ const productionEnvironment = {
 };
 
 describe('validateEnvironment', () => {
-  it('accepts an empty Command Code key in fake mode', () => {
-    expect(
-      validateEnvironment({
-        AI_MODE: 'fake',
-        COMMAND_CODE_API_KEY: '',
-      }).COMMAND_CODE_API_KEY,
-    ).toBeUndefined();
+  it('requires a Command Code key', () => {
+    expect(() => validateEnvironment({})).toThrow();
   });
 
   it('accepts a hardened production environment', () => {
@@ -68,10 +59,7 @@ describe('validateEnvironment', () => {
   });
 
   it.each([
-    ['ALLOW_DEMO_AUTH', 'true'],
-    ['AI_MODE', 'fake'],
     ['COMMAND_CODE_API_KEY', ''],
-    ['CATALOG_MODE', 'fake'],
     ['JWT_SECRET', 'local-development-secret-32-bytes'],
     ['PERSISTED_OPERATION_MANIFEST', ''],
     ['CLOUDFRONT_PRIVATE_KEY', ''],
@@ -84,14 +72,9 @@ describe('validateEnvironment', () => {
     ).toThrow();
   });
 
-  it('rejects Command Code mode without an API key', () => {
-    expect(() => validateEnvironment({ AI_MODE: 'commandcode' })).toThrow();
-  });
-
   it('rejects Claude models on the chat completions adapter', () => {
     expect(() =>
       validateEnvironment({
-        AI_MODE: 'commandcode',
         COMMAND_CODE_API_KEY: 'command-code-api-key',
         COMMAND_CODE_MODEL: 'claude-sonnet-5',
       }),

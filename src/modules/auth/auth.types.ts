@@ -1,4 +1,4 @@
-export type AuthProvider = 'apple' | 'kakao';
+export type AuthProvider = 'kakao';
 
 export type VerifiedIdentity = Readonly<{
   provider: AuthProvider;

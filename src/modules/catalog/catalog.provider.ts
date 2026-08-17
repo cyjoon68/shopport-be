@@ -4,13 +4,13 @@ import { z } from 'zod';
 import { rankProducts } from './neutral-ranking.js';
 import type {
   CatalogProduct,
-  CatalogProvider,
+  CatalogProvider as CatalogProviderContract,
   CatalogSearchInput,
   CatalogSearchResult,
 } from './types.js';
 
 const catalogIdNamespace = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
-const retailSearchBaseUrl = 'https://mcp.aka.page';
+const searchBaseUrl = 'https://mcp.aka.page';
 
 const oliveYoungProductSchema = z.object({
   goodsNumber: z.string().trim().min(1),
@@ -72,8 +72,8 @@ const interleave = (
 };
 
 @Injectable()
-export class RetailCatalogProvider implements CatalogProvider {
-  public readonly providerId = 'retail';
+export class CatalogProvider implements CatalogProviderContract {
+  public readonly providerId = 'catalog';
   public readonly capabilities = ['LIVE_QUERY'] as const;
   public readonly outboundHosts = [
     'www.oliveyoung.co.kr',
@@ -126,7 +126,7 @@ export class RetailCatalogProvider implements CatalogProvider {
     page: number,
     size: number,
   ): Promise<ReadonlyArray<CatalogProduct>> => {
-    const url = new URL('/api/oliveyoung/products', retailSearchBaseUrl);
+    const url = new URL('/api/oliveyoung/products', searchBaseUrl);
     url.searchParams.set('keyword', query);
     url.searchParams.set('page', String(page));
     url.searchParams.set('size', String(size));
@@ -152,7 +152,7 @@ export class RetailCatalogProvider implements CatalogProvider {
     page: number,
     size: number,
   ): Promise<ReadonlyArray<CatalogProduct>> => {
-    const url = new URL('/api/daiso/products', retailSearchBaseUrl);
+    const url = new URL('/api/daiso/products', searchBaseUrl);
     url.searchParams.set('q', query);
     url.searchParams.set('page', String(page));
     url.searchParams.set('pageSize', String(size));
@@ -178,9 +178,7 @@ export class RetailCatalogProvider implements CatalogProvider {
       headers: { accept: 'application/json' },
     });
     if (!response.ok) {
-      throw new Error(
-        `Retail catalog request failed: ${String(response.status)}`,
-      );
+      throw new Error(`Catalog request failed: ${String(response.status)}`);
     }
     return response.json();
   };

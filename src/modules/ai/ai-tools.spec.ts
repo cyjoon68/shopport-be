@@ -17,7 +17,7 @@ const product = (id: string): CatalogProduct => ({
 });
 
 describe('AI read-only tools', () => {
-  it('compares at most four products and caps a turn at six calls', async () => {
+  it('caps a turn at six catalog calls', async () => {
     const catalog = {
       search: (): Promise<CatalogSearchResult> =>
         Promise.resolve({
@@ -29,17 +29,13 @@ describe('AI read-only tools', () => {
         Promise.resolve(product(id)),
     };
     const session = new AiTools(catalog).createSession();
-    await expect(session.compareProducts(['one', 'two'])).resolves.toHaveLength(
-      2,
-    );
-    await expect(
-      session.compareProducts(['one', 'two', 'three', 'four', 'five']),
-    ).rejects.toThrow('compareProducts requires 2 to 4 unique products');
     await session.searchProducts('상품');
     await session.getProduct('one');
     await session.getProduct('two');
     await session.getProduct('three');
-    await expect(session.getProduct('four')).rejects.toThrow(
+    await session.getProduct('four');
+    await session.getProduct('five');
+    await expect(session.getProduct('six')).rejects.toThrow(
       'AI tool call limit exceeded',
     );
   });

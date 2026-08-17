@@ -81,13 +81,6 @@ const getProductDefinition = toolDefinition({
   inputSchema: z.object({ id: z.uuid() }),
 });
 
-const compareProductsDefinition = toolDefinition({
-  name: 'compareProducts',
-  description:
-    '2개에서 4개의 상품을 가격, 재고, 배송 기준으로 비교할 상품 카드로 조회합니다.',
-  inputSchema: z.object({ ids: z.array(z.uuid()).min(2).max(4) }),
-});
-
 const systemPrompt = [
   '당신은 한국어 AI 어시스턴트입니다.',
   '사용자의 질문에 자연스럽고 도움이 되는 한국어 일반 텍스트로 답하세요.',
@@ -446,11 +439,6 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
       const product = await session.getProduct(id);
       if (product) productIds.add(product.id);
       return toAiProductResult(product ? [product] : []);
-    }),
-    compareProductsDefinition.server(async ({ ids }) => {
-      const products = await session.compareProducts(ids);
-      products.forEach(({ id }) => productIds.add(id));
-      return toAiProductResult(products);
     }),
     askUserDefinition.server((input) => {
       setAskUser(input);
