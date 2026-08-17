@@ -17,7 +17,7 @@ describe('object store cleanup', () => {
   it('treats a missing bucket as an already-cleaned target', async () => {
     const send = jest
       .spyOn(S3Client.prototype, 'send')
-      .mockImplementation(async () => {
+      .mockImplementation(() => {
         throw Object.assign(new Error('The specified bucket does not exist'), {
           name: 'NoSuchBucket',
         });

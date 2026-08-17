@@ -82,10 +82,9 @@ describe('parseAiRequest', () => {
 
   it('keeps UUID run IDs stable', () => {
     const runId = uuidv7();
-    expect(parseRunReference({ ...requestFor([]), runId })).toEqual({
-      threadId: expect.any(String),
-      runId,
-      storageRunId: runId,
-    });
+    const request = parseRunReference({ ...requestFor([]), runId });
+    expect(typeof request.threadId).toBe('string');
+    expect(request.runId).toBe(runId);
+    expect(request.storageRunId).toBe(runId);
   });
 });
