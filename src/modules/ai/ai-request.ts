@@ -1,14 +1,26 @@
+import { v5 as uuidv5 } from 'uuid';
 import { z } from 'zod';
 
+const runIdNamespace = '00000000-0000-4000-8000-000000000001';
+
+export const runIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((value) => !/[\r\n]/u.test(value), 'Invalid run ID');
+
+export const storageRunIdFor = (runId: string): string =>
+  z.uuid().safeParse(runId).success ? runId : uuidv5(runId, runIdNamespace);
+
 const messageSchema = z.looseObject({
-  id: z.uuid(),
-  role: z.enum(['user', 'assistant', 'tool']),
-  content: z.unknown(),
+  id: z.string().min(1),
+  role: z.enum(['system', 'user', 'assistant', 'tool', 'reasoning']),
+  content: z.unknown().optional(),
 });
 
 const bodySchema = z.looseObject({
   threadId: z.uuid(),
-  runId: z.uuid(),
+  runId: runIdSchema,
   messages: z.array(messageSchema).min(1),
   forwardedProps: z.record(z.string(), z.unknown()).default({}),
 });
@@ -16,6 +28,7 @@ const bodySchema = z.looseObject({
 export type AiRequest = Readonly<{
   threadId: string;
   runId: string;
+  storageRunId: string;
   userMessageId: string;
   text: string;
   assetId: string | null;
@@ -58,6 +71,7 @@ export const parseAiRequest = (body: unknown): AiRequest => {
   const request = {
     threadId: parsed.threadId,
     runId: parsed.runId,
+    storageRunId: storageRunIdFor(parsed.runId),
     userMessageId,
     text,
     assetId,
@@ -70,5 +84,11 @@ export const parseAiRequest = (body: unknown): AiRequest => {
 
 export const parseRunReference = (
   body: unknown,
-): Readonly<{ threadId: string; runId: string }> =>
-  bodySchema.pick({ threadId: true, runId: true }).parse(body);
+): Readonly<{ threadId: string; runId: string; storageRunId: string }> => {
+  const parsed = bodySchema.pick({ threadId: true, runId: true }).parse(body);
+  return {
+    threadId: parsed.threadId,
+    runId: parsed.runId,
+    storageRunId: storageRunIdFor(parsed.runId),
+  };
+};

@@ -11,6 +11,11 @@ import { GenericContainer } from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
+import type {
+  AuthProvider,
+  VerifiedIdentity,
+} from '../src/modules/auth/auth.types.js';
+import { ProviderTokenVerifier } from '../src/modules/auth/provider-token-verifier.js';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import { ObjectStore } from '../src/storage/object-store.js';
@@ -107,7 +112,13 @@ const parseStreamChunks = (
     .split('\n')
     .map((line) => streamChunkSchema.parse(JSON.parse(line)));
 
-describe('Shopport API vertical flow', () => {
+const runIntegration = process.env.COMMAND_CODE_API_KEY
+  ? describe
+  : describe.skip;
+const integrationIdentityToken = 'integration-kakao-token';
+const integrationSubject = 'integration-kakao';
+
+runIntegration('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
   let redis: StartedTestContainer;
@@ -144,9 +155,6 @@ describe('Shopport API vertical flow', () => {
     process.env.DATABASE_URL = postgres.getConnectionUri();
     process.env.REDIS_URL = `redis://${redis.getHost()}:${String(redis.getMappedPort(6379))}`;
     process.env.JWT_SECRET = 'integration-test-secret-at-least-32-bytes';
-    process.env.ALLOW_DEMO_AUTH = 'true';
-    process.env.AI_MODE = 'fake';
-    process.env.CATALOG_MODE = 'fake';
     process.env.PERSISTED_OPERATION_MANIFEST = '';
     process.env.AWS_ENDPOINT_URL = 'http://localhost:4566';
     process.env.RAW_ASSET_BUCKET = 'integration-raw';
@@ -171,7 +179,18 @@ describe('Shopport API vertical flow', () => {
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(ProviderTokenVerifier)
+      .useValue({
+        verify: (provider: AuthProvider): Promise<VerifiedIdentity> =>
+          Promise.resolve({
+            provider,
+            subject: integrationSubject,
+            displayName: '통합 테스트 사용자',
+            profileImageUrl: null,
+          }),
+      })
+      .compile();
     app = module.createNestApplication();
     appInitialized = true;
     await app.listen(0, '127.0.0.1');
@@ -205,15 +224,13 @@ describe('Shopport API vertical flow', () => {
 
   it('creates one identity and account under concurrent first login', async () => {
     const responses = await Promise.all([
-      request(baseUrl).post('/v1/auth/apple').send({
-        identityToken: 'demo',
+      request(baseUrl).post('/v1/auth/kakao').send({
+        identityToken: integrationIdentityToken,
         nonce: 'concurrent-login-a',
-        displayName: '동시 가입 사용자',
       }),
-      request(baseUrl).post('/v1/auth/apple').send({
-        identityToken: 'demo',
+      request(baseUrl).post('/v1/auth/kakao').send({
+        identityToken: integrationIdentityToken,
         nonce: 'concurrent-login-b',
-        displayName: '동시 가입 사용자',
       }),
     ]);
     expect(responses.map(({ status }) => status)).toEqual([200, 200]);
@@ -221,20 +238,23 @@ describe('Shopport API vertical flow', () => {
       `select count(*) over () as count, a.display_name
        from auth_identities i
        join accounts a on a.id = i.account_id
-       where i.provider = 'apple' and i.provider_subject = 'demo-apple'`,
+       where i.provider = 'kakao' and i.provider_subject = '${integrationSubject}'`,
     );
 
     expect(result.rows).toHaveLength(1);
     expect(result.rows.at(0)).toMatchObject({
       count: '1',
-      display_name: '동시 가입 사용자',
+      display_name: '통합 테스트 사용자',
     });
   });
 
   it('logs in, chats, replays, saves a product, and reads history', async () => {
     const loginResponse = await request(baseUrl)
-      .post('/v1/auth/apple')
-      .send({ identityToken: 'demo', nonce: 'integration-nonce' })
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'integration-nonce',
+      })
       .expect(200);
     const login = loginSchema.parse(loginResponse.body);
     accessToken = login.accessToken;
@@ -320,7 +340,7 @@ describe('Shopport API vertical flow', () => {
       .parse(searchResponse.body)
       .data.searchProducts.edges.at(0)?.node;
     expect(product).toBeDefined();
-    if (!product) throw new Error('Expected fake product');
+    if (!product) throw new Error('Expected catalog product');
 
     await request(baseUrl)
       .post('/graphql')
@@ -368,7 +388,10 @@ describe('Shopport API vertical flow', () => {
   it('hides cross-account replay and cancel, then cancels idempotently', async () => {
     const secondLoginResponse = await request(baseUrl)
       .post('/v1/auth/kakao')
-      .send({ identityToken: 'demo', nonce: 'second-account' })
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'second-account',
+      })
       .expect(200);
     const secondLogin = loginSchema.parse(secondLoginResponse.body);
 
@@ -396,10 +419,10 @@ describe('Shopport API vertical flow', () => {
     const account = await pool.query<{ account_id: string }>(
       `select account_id
        from auth_identities
-       where provider = 'apple' and provider_subject = 'demo-apple'`,
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
     );
     const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Apple account');
+    if (!accountId) throw new Error('Expected Kakao account');
     const usage = await pool.query<{ usage_date: string; text_count: number }>(
       `select usage_date::text, text_count
        from daily_usage
@@ -487,7 +510,7 @@ describe('Shopport API vertical flow', () => {
        join auth_sessions child on child.id = parent.replaced_by_session_id
        join auth_identities identity on identity.account_id = parent.account_id
        where identity.provider = 'kakao'
-         and identity.provider_subject = 'demo-kakao'`,
+         and identity.provider_subject = '${integrationSubject}'`,
     );
     expect(successors.rows.at(0)?.count).toBe('1');
   }, 30_000);
@@ -496,10 +519,10 @@ describe('Shopport API vertical flow', () => {
     const account = await pool.query<{ account_id: string }>(
       `select account_id
        from auth_identities
-       where provider = 'apple' and provider_subject = 'demo-apple'`,
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
     );
     const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Apple account');
+    if (!accountId) throw new Error('Expected Kakao account');
     const usage = await pool.query<{ usage_date: string; text_count: number }>(
       `select usage_date::text, text_count
        from daily_usage
@@ -573,10 +596,10 @@ describe('Shopport API vertical flow', () => {
     const account = await pool.query<{ account_id: string }>(
       `select account_id
        from auth_identities
-       where provider = 'apple' and provider_subject = 'demo-apple'`,
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
     );
     const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Apple account');
+    if (!accountId) throw new Error('Expected Kakao account');
     const archivedMessageId = uuidv7();
     const archivedPartId = uuidv7();
     const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1_000);

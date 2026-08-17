@@ -29,15 +29,10 @@ export class AuthService {
     provider: AuthProvider,
     idToken: string,
     nonce: string,
-    displayName?: string,
   ): Promise<TokenPair> => {
     const verified = await this.verifier.verify(provider, idToken, nonce);
-    const identity =
-      provider === 'apple' && displayName
-        ? { ...verified, displayName }
-        : verified;
     const account = await this.repository.findOrCreateAccount(
-      identity,
+      verified,
       new Date(),
     );
     return this.issueTokens(account.accountId);

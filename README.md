@@ -24,11 +24,8 @@ pnpm build
 
 `schema.graphql` is the canonical mobile API contract. Production schema changes use additive changes and deprecation before removal.
 
-The API uses deterministic fake AI/catalog adapters in development and test. Production AI requests use the Command Code Provider API with zero data retention enforced. Crawling, HTML parsing, unofficial endpoints, and provider secrets in clients are prohibited.
-
-In fake mode, `무선 이어폰 찾아줘` exercises the interactive `askUser` clarification flow before returning the local earbuds fixture.
+The API uses the Command Code Provider API and live catalog providers. Crawling, HTML parsing, unofficial endpoints, and provider secrets in clients are prohibited.
 
 ## Production blockers
 
-- `AI_MODE=commandcode` requires `COMMAND_CODE_API_KEY`. `COMMAND_CODE_MODEL` defaults to the vision-capable `gpt-5.4-mini`; Claude model IDs are rejected because they require Command Code's Anthropic Messages endpoint.
-- `CATALOG_MODE=approved` requires an approved shopping provider adapter registration.
+- `COMMAND_CODE_API_KEY` is required. `COMMAND_CODE_MODEL` defaults to the vision-capable `gpt-5.4-mini`; Claude model IDs are rejected because they require Command Code's Anthropic Messages endpoint.

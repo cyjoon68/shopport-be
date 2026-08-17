@@ -1,7 +1,13 @@
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
-import { parseAiRequest } from './ai-request.js';
+import {
+  parseAiRequest,
+  parseRunReference,
+  storageRunIdFor,
+} from './ai-request.js';
 
-const requestFor = (messages: ReadonlyArray<unknown>): unknown => ({
+const requestFor = (
+  messages: ReadonlyArray<unknown>,
+): Record<string, unknown> => ({
   threadId: uuidv7(),
   runId: uuidv7(),
   messages,
@@ -47,5 +53,38 @@ describe('parseAiRequest', () => {
         ]),
       ),
     ).toThrow('User message exceeds 2000 chars');
+  });
+
+  it('normalizes TanStack client run IDs only for storage keys', () => {
+    const runId = 'run-123-abc';
+    const request = parseAiRequest({
+      ...requestFor([{ id: uuidv7(), role: 'user', content: '요청' }]),
+      runId,
+    });
+
+    expect(request.runId).toBe(runId);
+    expect(request.storageRunId).toBe(storageRunIdFor(runId));
+    expect(request.storageRunId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+  });
+
+  it('accepts opaque historical wire messages', () => {
+    const request = parseAiRequest(
+      requestFor([
+        { id: 'msg-history', role: 'assistant' },
+        { id: uuidv7(), role: 'user', content: '최종 요청' },
+      ]),
+    );
+
+    expect(request.text).toBe('최종 요청');
+  });
+
+  it('keeps UUID run IDs stable', () => {
+    const runId = uuidv7();
+    const request = parseRunReference({ ...requestFor([]), runId });
+    expect(typeof request.threadId).toBe('string');
+    expect(request.runId).toBe(runId);
+    expect(request.storageRunId).toBe(runId);
   });
 });

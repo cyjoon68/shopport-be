@@ -16,7 +16,8 @@ const parseStringLiteral = (value: ValueNode, scalar: string): string => {
 };
 
 const parseDateTime = (value: unknown): Date => {
-  const date = new Date(stringValue(value, 'DateTime'));
+  const date =
+    value instanceof Date ? value : new Date(stringValue(value, 'DateTime'));
   if (Number.isNaN(date.getTime())) throw new GraphQLError('Invalid DateTime');
   return date;
 };

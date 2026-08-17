@@ -14,6 +14,9 @@ import type { StorageBucket, StorageBuckets } from './storage-buckets.js';
 
 const localCredentials = { accessKeyId: 'test', secretAccessKey: 'test' };
 
+const isMissingBucketError = (error: unknown): boolean =>
+  error instanceof Error && error.name === 'NoSuchBucket';
+
 @Injectable()
 export class ObjectStore {
   readonly #s3: S3Client;
@@ -60,38 +63,46 @@ export class ObjectStore {
     bucket: StorageBucket,
     key: string,
   ): Promise<void> => {
-    await this.#s3.send(
-      new DeleteObjectCommand({ Bucket: this.#buckets[bucket], Key: key }),
-    );
+    try {
+      await this.#s3.send(
+        new DeleteObjectCommand({ Bucket: this.#buckets[bucket], Key: key }),
+      );
+    } catch (error) {
+      if (!isMissingBucketError(error)) throw error;
+    }
   };
 
   public deletePrefix = async (
     bucket: StorageBucket,
     prefix: string,
   ): Promise<void> => {
-    let continuationToken: string | undefined;
-    do {
-      const page = await this.#s3.send(
-        new ListObjectsV2Command({
-          Bucket: this.#buckets[bucket],
-          Prefix: prefix,
-          ...(continuationToken
-            ? { ContinuationToken: continuationToken }
-            : {}),
-        }),
-      );
-      const objects = (page.Contents ?? []).flatMap(({ Key }) =>
-        Key ? [{ Key }] : [],
-      );
-      if (objects.length > 0) {
-        await this.#s3.send(
-          new DeleteObjectsCommand({
+    try {
+      let continuationToken: string | undefined;
+      do {
+        const page = await this.#s3.send(
+          new ListObjectsV2Command({
             Bucket: this.#buckets[bucket],
-            Delete: { Objects: objects, Quiet: true },
+            Prefix: prefix,
+            ...(continuationToken
+              ? { ContinuationToken: continuationToken }
+              : {}),
           }),
         );
-      }
-      continuationToken = page.NextContinuationToken;
-    } while (continuationToken);
+        const objects = (page.Contents ?? []).flatMap(({ Key }) =>
+          Key ? [{ Key }] : [],
+        );
+        if (objects.length > 0) {
+          await this.#s3.send(
+            new DeleteObjectsCommand({
+              Bucket: this.#buckets[bucket],
+              Delete: { Objects: objects, Quiet: true },
+            }),
+          );
+        }
+        continuationToken = page.NextContinuationToken;
+      } while (continuationToken);
+    } catch (error) {
+      if (!isMissingBucketError(error)) throw error;
+    }
   };
 }

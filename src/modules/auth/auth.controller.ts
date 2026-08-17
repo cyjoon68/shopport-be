@@ -15,30 +15,12 @@ const loginSchema = z.object({
   nonce: z.string().min(1),
 });
 
-const appleLoginSchema = loginSchema.extend({
-  displayName: z.string().trim().max(80).optional(),
-});
-
 const refreshSchema = z.object({ refreshToken: z.string().min(1) });
 
 @Controller('v1/auth')
 @Public()
 export class AuthController {
   public constructor(private readonly auth: AuthService) {}
-
-  @Post('apple')
-  @HttpCode(200)
-  public async apple(@Body() body: unknown): Promise<TokenPair> {
-    const input = appleLoginSchema.safeParse(body);
-    if (!input.success)
-      throw new UnauthorizedException('Invalid login request');
-    return this.auth.login(
-      'apple',
-      input.data.identityToken,
-      input.data.nonce,
-      input.data.displayName,
-    );
-  }
 
   @Post('kakao')
   @HttpCode(200)
