@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -64,7 +66,7 @@ export const askUserSchema = z
 const askUserDefinition = toolDefinition({
   name: 'askUser',
   description:
-    '추천을 실질적으로 바꾸는 필수 조건 하나를 짧은 한국어 질문과 선택지로 요청합니다.',
+    '추천을 실질적으로 바꾸는 필수 조건 하나를 짧은 한국어 질문과 선택지로 요청합니다. 채팅 본문에는 고르라는 문장을 쓰지 않습니다.',
   inputSchema: askUserSchema,
 });
 
@@ -81,11 +83,10 @@ const getProductDefinition = toolDefinition({
   inputSchema: z.object({ id: z.uuid() }),
 });
 
-const systemPrompt = [
-  '당신은 한국어 AI 어시스턴트입니다.',
-  '사용자의 질문에 자연스럽고 도움이 되는 한국어 일반 텍스트로 답하세요.',
-  '사실이 불확실하면 추측하지 말고 모른다고 말하세요.',
-].join('\n');
+const harnessPath = fileURLToPath(
+  new URL('./shopping-ai-harness.md', import.meta.url),
+);
+const systemPrompt = readFileSync(harnessPath, 'utf8');
 
 type TerminalStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled';
 
