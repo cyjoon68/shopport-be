@@ -4,6 +4,7 @@ import type { CatalogProduct, CatalogSearchResult } from '../catalog/types.js';
 const product = (id: string): CatalogProduct => ({
   id,
   providerId: 'test',
+  productCode: id,
   title: id,
   imageUrl: 'https://images.example/product.jpg',
   affiliate: false,
@@ -14,6 +15,9 @@ const product = (id: string): CatalogProduct => ({
   ratingConfidence: 1,
   freshnessEpochMs: 1,
   outboundUrl: 'https://shop.example/product',
+  store: null,
+  inventory: null,
+  evidence: [{ operation: 'products', fetchedAt: 1 }],
 });
 
 describe('AI read-only tools', () => {
@@ -29,7 +33,7 @@ describe('AI read-only tools', () => {
         Promise.resolve(product(id)),
     };
     const session = new AiTools(catalog).createSession();
-    await session.searchProducts('상품');
+    await session.searchProducts({ query: '상품' });
     await session.getProduct('one');
     await session.getProduct('two');
     await session.getProduct('three');

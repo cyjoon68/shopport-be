@@ -46,6 +46,7 @@ export type MessagePartGraphql =
       __typename: 'ProductReferenceMessagePart';
       id: string;
       product: unknown;
+      aiSummary: string | null;
     }>
   | Readonly<{
       __typename: 'ToolStatusMessagePart';

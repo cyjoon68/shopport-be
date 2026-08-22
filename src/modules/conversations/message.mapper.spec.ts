@@ -1,6 +1,26 @@
 import { describe, expect, it } from '@jest/globals';
 import type { CatalogService } from '../catalog/catalog.service.js';
+import type { CatalogProduct } from '../catalog/types.js';
 import { mapMessages } from './message.mapper.js';
+
+const product: CatalogProduct = {
+  id: '0198a122-0c00-7000-8000-000000000013',
+  providerId: 'daiso',
+  productCode: 'lip-balm',
+  title: '립밤',
+  imageUrl: 'https://example.com/lip-balm.jpg',
+  affiliate: false,
+  relevanceBucket: 3,
+  inStock: true,
+  totalAmountMinor: '1000',
+  deliveryEstimateDays: null,
+  ratingConfidence: 1,
+  freshnessEpochMs: 1_786_460_400_000,
+  outboundUrl: 'https://example.com/lip-balm',
+  store: null,
+  inventory: null,
+  evidence: [],
+};
 
 describe('mapMessages', () => {
   it('restores an archived ask_user part for the GraphQL union', async () => {
@@ -44,5 +64,55 @@ describe('mapMessages', () => {
         allowFreeText: true,
       },
     ]);
+  });
+
+  it('maps new and legacy product references without fabricating summaries', async () => {
+    const messages = await mapMessages(
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000011',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          role: 'assistant',
+          status: 'completed',
+          createdAt: new Date('2026-08-14T00:00:00Z'),
+        },
+      ],
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000012',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'product_reference',
+          position: 0,
+          payload: {
+            productId: product.id,
+            aiSummary:
+              '건조함을 줄이는 데 쓸 수 있고 재고가 확인된 립밤이에요.',
+          },
+        },
+        {
+          id: '0198a122-0c00-7000-8000-000000000014',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'product_reference',
+          position: 1,
+          payload: { productId: product.id },
+        },
+      ],
+      {
+        getProduct: () => Promise.resolve(product),
+      } as unknown as CatalogService,
+    );
+
+    expect(messages[0]?.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          __typename: 'ProductReferenceMessagePart',
+          aiSummary: '건조함을 줄이는 데 쓸 수 있고 재고가 확인된 립밤이에요.',
+        }),
+        expect.objectContaining({
+          __typename: 'ProductReferenceMessagePart',
+          aiSummary: null,
+        }),
+      ]),
+    );
   });
 });

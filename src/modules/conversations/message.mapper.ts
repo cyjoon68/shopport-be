@@ -9,7 +9,10 @@ import type {
 } from './conversation.types.js';
 
 const textPayload = z.object({ text: z.string() });
-const productPayload = z.object({ productId: z.uuid() });
+const productPayload = z.object({
+  productId: z.uuid(),
+  aiSummary: z.string().trim().min(1).max(80).optional(),
+});
 const askUserPayload = z.object({
   question: z.string(),
   options: z.array(z.object({ id: z.string(), label: z.string() })),
@@ -47,6 +50,7 @@ const mapPart = async (
           __typename: 'ProductReferenceMessagePart',
           id: part.id,
           product: toProductGraphql(product),
+          aiSummary: payload.data.aiSummary ?? null,
         }
       : null;
   }

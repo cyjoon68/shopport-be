@@ -8,13 +8,13 @@ import { AiTools } from './ai-tools.js';
 import { RedisRunCancellation } from './redis-run-cancellation.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import {
-  COMMAND_CODE_FETCH,
-  CommandCodeAiStreamAdapter,
-} from './command-code-ai.adapter.js';
+  AI_PROVIDER_FETCH,
+  OpenAiCompatibleAiStreamAdapter,
+} from './openai-compatible-ai.adapter.js';
 
 export const aiStreamAdapterProvider = {
   provide: AI_STREAM_ADAPTER,
-  useExisting: CommandCodeAiStreamAdapter,
+  useExisting: OpenAiCompatibleAiStreamAdapter,
 };
 
 @Module({
@@ -25,8 +25,8 @@ export const aiStreamAdapterProvider = {
     AiService,
     AiTools,
     RedisRunCancellation,
-    CommandCodeAiStreamAdapter,
-    { provide: COMMAND_CODE_FETCH, useValue: globalThis.fetch },
+    OpenAiCompatibleAiStreamAdapter,
+    { provide: AI_PROVIDER_FETCH, useValue: globalThis.fetch },
     aiStreamAdapterProvider,
   ],
 })

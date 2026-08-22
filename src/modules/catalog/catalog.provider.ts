@@ -12,12 +12,27 @@ import type {
 const catalogIdNamespace = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 const searchBaseUrl = 'https://mcp.aka.page';
 
+const oliveYoungStoreSchema = z.object({
+  storeCode: z.string(),
+  storeName: z.string(),
+  address: z.string(),
+  distance: z.number().optional(),
+  remainQuantity: z.number().int().optional(),
+  stockStatus: z.enum(['in_stock', 'out_of_stock', 'not_sold']),
+});
+
 const oliveYoungProductSchema = z.object({
   goodsNumber: z.string().trim().min(1),
   goodsName: z.string().trim().min(1),
   imageUrl: z.url(),
   priceToPay: z.number().int().nonnegative(),
   inStock: z.boolean().optional(),
+  storeInventory: z
+    .object({
+      inStockCount: z.number().int().nonnegative(),
+      stores: z.array(oliveYoungStoreSchema),
+    })
+    .optional(),
 });
 
 const daisoProductSchema = z.object({
@@ -28,24 +43,45 @@ const daisoProductSchema = z.object({
   soldOut: z.boolean().optional(),
 });
 
+const daisoStoreSchema = z.object({
+  storeCode: z.string(),
+  storeName: z.string(),
+  address: z.string(),
+  distance: z.string().optional(),
+  quantity: z.number().int().nonnegative(),
+});
+
 const oliveYoungSearchSchema = z.object({
   success: z.literal(true),
+  data: z.object({ products: z.array(oliveYoungProductSchema) }),
+});
+
+const oliveYoungInventorySchema = z.object({
+  success: z.literal(true),
   data: z.object({
-    products: z.array(oliveYoungProductSchema),
+    inventory: z.object({ products: z.array(oliveYoungProductSchema) }),
   }),
 });
 
 const daisoSearchSchema = z.object({
   success: z.literal(true),
+  data: z.object({ products: z.array(daisoProductSchema) }),
+});
+
+const daisoInventorySchema = z.object({
+  success: z.literal(true),
   data: z.object({
-    products: z.array(daisoProductSchema),
+    storeInventory: z.object({
+      inStockCount: z.number().int().nonnegative(),
+      stores: z.array(daisoStoreSchema),
+    }),
   }),
 });
 
 const catalogIdFor = (
   providerId: 'oliveyoung' | 'daiso',
-  sourceId: string,
-): string => uuidv5(`${providerId}:${sourceId}`, catalogIdNamespace);
+  productCode: string,
+): string => uuidv5(`${providerId}:${productCode}`, catalogIdNamespace);
 
 const pageFromCursor = (after: string | null): number => {
   if (!after) return 1;
@@ -56,20 +92,82 @@ const pageFromCursor = (after: string | null): number => {
 const encodePageCursor = (page: number): string =>
   Buffer.from(String(page), 'utf8').toString('base64url');
 
-const interleave = (
-  left: ReadonlyArray<CatalogProduct>,
-  right: ReadonlyArray<CatalogProduct>,
-): ReadonlyArray<CatalogProduct> => {
-  const items: CatalogProduct[] = [];
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftItem = left.at(index);
-    const rightItem = right.at(index);
-    if (leftItem) items.push(leftItem);
-    if (rightItem) items.push(rightItem);
-  }
-  return items;
+const toOliveYoungProduct = (
+  product: z.infer<typeof oliveYoungProductSchema>,
+  fetchedAt: number,
+  location?: string,
+): CatalogProduct => {
+  const stores = product.storeInventory?.stores ?? [];
+  const inStockStore = stores.find(
+    ({ stockStatus }) => stockStatus === 'in_stock',
+  );
+  const store = inStockStore ?? stores.at(0);
+  const status = product.storeInventory
+    ? inStockStore || product.storeInventory.inStockCount > 0
+      ? 'in_stock'
+      : 'out_of_stock'
+    : location
+      ? 'unconfirmed'
+      : null;
+  return {
+    id: catalogIdFor('oliveyoung', product.goodsNumber),
+    providerId: 'oliveyoung',
+    productCode: product.goodsNumber,
+    title: product.goodsName,
+    imageUrl: product.imageUrl,
+    affiliate: false,
+    relevanceBucket: 2,
+    inStock: status ? status === 'in_stock' : (product.inStock ?? true),
+    totalAmountMinor: String(product.priceToPay),
+    deliveryEstimateDays: null,
+    ratingConfidence: 0,
+    freshnessEpochMs: fetchedAt,
+    outboundUrl: `https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo=${encodeURIComponent(product.goodsNumber)}`,
+    store: store
+      ? {
+          code: store.storeCode,
+          name: store.storeName,
+          address: store.address,
+          distance:
+            store.distance === undefined ? null : String(store.distance),
+        }
+      : null,
+    inventory:
+      location && status
+        ? {
+            status,
+            quantity: store?.remainQuantity ?? null,
+            location,
+          }
+        : null,
+    evidence: [
+      { operation: 'products', fetchedAt },
+      ...(location ? [{ operation: 'inventory' as const, fetchedAt }] : []),
+    ],
+  };
 };
+
+const toDaisoProduct = (
+  product: z.infer<typeof daisoProductSchema>,
+  fetchedAt: number,
+): CatalogProduct => ({
+  id: catalogIdFor('daiso', product.id),
+  providerId: 'daiso',
+  productCode: product.id,
+  title: product.name,
+  imageUrl: product.imageUrl,
+  affiliate: false,
+  relevanceBucket: 2,
+  inStock: product.soldOut !== true,
+  totalAmountMinor: String(product.price),
+  deliveryEstimateDays: null,
+  ratingConfidence: 0,
+  freshnessEpochMs: fetchedAt,
+  outboundUrl: `https://www.daisomall.co.kr/ds/prd/detail?pdNo=${encodeURIComponent(product.id)}`,
+  store: null,
+  inventory: null,
+  evidence: [{ operation: 'products', fetchedAt }],
+});
 
 @Injectable()
 export class CatalogProvider implements CatalogProviderContract {
@@ -96,19 +194,35 @@ export class CatalogProvider implements CatalogProviderContract {
     }
     const page = pageFromCursor(input.after);
     const size = Math.min(Math.max(input.first, 1), 20);
-    const [oliveYoung, daiso] = await Promise.all([
-      this.searchOliveYoung(query, page, size).catch(() => []),
-      this.searchDaiso(query, page, size).catch(() => []),
-    ]);
-    const items = interleave(
-      rankProducts(oliveYoung),
-      rankProducts(daiso),
-    ).slice(0, size);
+    const fetchSize = input.budgetMax === undefined ? size : 20;
+    const providerId = input.providerId ?? 'daiso';
+    const products =
+      providerId === 'oliveyoung'
+        ? await this.searchOliveYoung(query, page, fetchSize, input.location)
+        : await this.searchDaiso(query, page, fetchSize);
+    const withinBudget = products.filter(
+      ({ totalAmountMinor }) =>
+        input.budgetMax === undefined ||
+        Number(totalAmountMinor) <= input.budgetMax,
+    );
+    const selected = rankProducts(withinBudget).slice(0, size);
+    const location = input.location;
+    const items = location
+      ? providerId === 'daiso'
+        ? rankProducts(
+            await Promise.all(
+              selected.map((product) =>
+                this.withDaisoInventory(product, location),
+              ),
+            ),
+          )
+        : selected
+      : selected;
     items.forEach((product) => this.#products.set(product.id, product));
     return {
       items,
       endCursor: encodePageCursor(page + 1),
-      hasNextPage: oliveYoung.length + daiso.length > items.length,
+      hasNextPage: products.length === fetchSize || withinBudget.length > size,
     };
   };
 
@@ -125,26 +239,28 @@ export class CatalogProvider implements CatalogProviderContract {
     query: string,
     page: number,
     size: number,
+    location?: string,
   ): Promise<ReadonlyArray<CatalogProduct>> => {
-    const url = new URL('/api/oliveyoung/products', searchBaseUrl);
+    const url = new URL(
+      location ? '/api/oliveyoung/inventory' : '/api/oliveyoung/products',
+      searchBaseUrl,
+    );
     url.searchParams.set('keyword', query);
     url.searchParams.set('page', String(page));
     url.searchParams.set('size', String(size));
-    const parsed = oliveYoungSearchSchema.parse(await this.getJson(url));
-    return parsed.data.products.map((product) => ({
-      id: catalogIdFor('oliveyoung', product.goodsNumber),
-      providerId: 'oliveyoung',
-      title: product.goodsName,
-      imageUrl: product.imageUrl,
-      affiliate: false,
-      relevanceBucket: 2,
-      inStock: product.inStock ?? true,
-      totalAmountMinor: String(product.priceToPay),
-      deliveryEstimateDays: null,
-      ratingConfidence: 0,
-      freshnessEpochMs: 0,
-      outboundUrl: `https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo=${encodeURIComponent(product.goodsNumber)}`,
-    }));
+    if (location) {
+      url.searchParams.set('storeKeyword', location);
+      url.searchParams.set('storeLimit', '10');
+      url.searchParams.set('stockCheckLimit', String(size));
+    }
+    const response = await this.getJson(url);
+    const products = location
+      ? oliveYoungInventorySchema.parse(response).data.inventory.products
+      : oliveYoungSearchSchema.parse(response).data.products;
+    const fetchedAt = Date.now();
+    return products.map((product) =>
+      toOliveYoungProduct(product, fetchedAt, location),
+    );
   };
 
   private readonly searchDaiso = async (
@@ -157,20 +273,46 @@ export class CatalogProvider implements CatalogProviderContract {
     url.searchParams.set('page', String(page));
     url.searchParams.set('pageSize', String(size));
     const parsed = daisoSearchSchema.parse(await this.getJson(url));
-    return parsed.data.products.map((product) => ({
-      id: catalogIdFor('daiso', product.id),
-      providerId: 'daiso',
-      title: product.name,
-      imageUrl: product.imageUrl,
-      affiliate: false,
-      relevanceBucket: 2,
-      inStock: product.soldOut !== true,
-      totalAmountMinor: String(product.price),
-      deliveryEstimateDays: null,
-      ratingConfidence: 0,
-      freshnessEpochMs: 0,
-      outboundUrl: `https://www.daisomall.co.kr/ds/prd/detail?pdNo=${encodeURIComponent(product.id)}`,
-    }));
+    const fetchedAt = Date.now();
+    return parsed.data.products.map((product) =>
+      toDaisoProduct(product, fetchedAt),
+    );
+  };
+
+  private readonly withDaisoInventory = async (
+    product: CatalogProduct,
+    location: string,
+  ): Promise<CatalogProduct> => {
+    const url = new URL('/api/daiso/inventory', searchBaseUrl);
+    url.searchParams.set('productId', product.productCode);
+    url.searchParams.set('keyword', location);
+    url.searchParams.set('pageSize', '10');
+    const parsed = daisoInventorySchema.parse(await this.getJson(url));
+    const stores = parsed.data.storeInventory.stores;
+    const inStockStore = stores.find(({ quantity }) => quantity > 0);
+    const store = inStockStore ?? stores.at(0);
+    const fetchedAt = Date.now();
+    const inStock =
+      inStockStore !== undefined || parsed.data.storeInventory.inStockCount > 0;
+    return {
+      ...product,
+      inStock,
+      freshnessEpochMs: fetchedAt,
+      store: store
+        ? {
+            code: store.storeCode,
+            name: store.storeName,
+            address: store.address,
+            distance: store.distance ?? null,
+          }
+        : null,
+      inventory: {
+        status: inStock ? 'in_stock' : 'out_of_stock',
+        quantity: store?.quantity ?? null,
+        location,
+      },
+      evidence: [...product.evidence, { operation: 'inventory', fetchedAt }],
+    };
   };
 
   private readonly getJson = async (url: URL): Promise<unknown> => {

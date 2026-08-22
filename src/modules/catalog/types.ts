@@ -3,6 +3,7 @@ export type CatalogCapability = 'LIVE_QUERY' | 'LICENSED_FEED';
 export type CatalogProduct = Readonly<{
   id: string;
   providerId: string;
+  productCode: string;
   title: string;
   imageUrl: string;
   affiliate: boolean;
@@ -13,12 +14,32 @@ export type CatalogProduct = Readonly<{
   ratingConfidence: number;
   freshnessEpochMs: number;
   outboundUrl: string;
+  store: Readonly<{
+    code: string;
+    name: string;
+    address: string;
+    distance: string | null;
+  }> | null;
+  inventory: Readonly<{
+    status: 'in_stock' | 'out_of_stock' | 'unconfirmed';
+    quantity: number | null;
+    location: string;
+  }> | null;
+  evidence: ReadonlyArray<
+    Readonly<{
+      operation: 'products' | 'inventory';
+      fetchedAt: number;
+    }>
+  >;
 }>;
 
 export type CatalogSearchInput = Readonly<{
   query: string;
   first: number;
   after: string | null;
+  providerId?: 'daiso' | 'oliveyoung';
+  budgetMax?: number;
+  location?: string;
 }>;
 
 export type CatalogSearchResult = Readonly<{

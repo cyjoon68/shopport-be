@@ -39,6 +39,7 @@ RUN apt-get update \
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json schema.graphql ./
+COPY --chown=node:node src/modules/ai/shopping-ai-harness.md ./dist/src/modules/ai/shopping-ai-harness.md
 COPY --chown=node:node migrations ./migrations
 USER node
 EXPOSE 4000

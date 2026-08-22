@@ -121,6 +121,7 @@ type ProductReferenceMessagePart {
   id: UUID!
   "The referenced product."
   product: Product!
+  aiSummary: String
 }
 
 "A read-only tool progress part."
