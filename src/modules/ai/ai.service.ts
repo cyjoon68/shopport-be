@@ -59,7 +59,7 @@ export class AiService {
               request.threadId,
               result.messageId,
               result.text,
-              result.productIds,
+              result.productRecommendations,
               result.askUser,
             ),
           onFailure: () => this.repository.failRun(request.storageRunId),

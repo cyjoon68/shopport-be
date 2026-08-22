@@ -4,16 +4,16 @@ import type { TestingModule } from '@nestjs/testing';
 import type { Environment } from '../../config/environment.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import {
-  COMMAND_CODE_FETCH,
-  CommandCodeAiStreamAdapter,
-} from './command-code-ai.adapter.js';
+  AI_PROVIDER_FETCH,
+  OpenAiCompatibleAiStreamAdapter,
+} from './openai-compatible-ai.adapter.js';
 import { aiStreamAdapterProvider } from './ai.module.js';
 
 const compileAdapter = (): Promise<TestingModule> =>
   Test.createTestingModule({
     providers: [
-      CommandCodeAiStreamAdapter,
-      { provide: COMMAND_CODE_FETCH, useValue: globalThis.fetch },
+      OpenAiCompatibleAiStreamAdapter,
+      { provide: AI_PROVIDER_FETCH, useValue: globalThis.fetch },
       aiStreamAdapterProvider,
       {
         provide: ConfigService,
@@ -27,10 +27,10 @@ const compileAdapter = (): Promise<TestingModule> =>
   }).compile();
 
 describe('AiModule adapter selection', () => {
-  it('connects the Command Code adapter', async () => {
+  it('connects the OpenAI-compatible adapter', async () => {
     const module = await compileAdapter();
     expect(module.get(AI_STREAM_ADAPTER)).toBeInstanceOf(
-      CommandCodeAiStreamAdapter,
+      OpenAiCompatibleAiStreamAdapter,
     );
     await module.close();
   });

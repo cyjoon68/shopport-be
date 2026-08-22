@@ -19,7 +19,11 @@ import {
   messages,
 } from '../../database/schema.js';
 import { AiAccessError } from './ai.errors.js';
-import type { AiHistoryMessage, AskUser } from './ai-stream.adapter.js';
+import type {
+  AiHistoryMessage,
+  AiProductRecommendation,
+  AskUser,
+} from './ai-stream.adapter.js';
 import { getKstUsageDate, reserveQuota } from './quota.js';
 
 type BeginRunInput = Readonly<{
@@ -204,7 +208,7 @@ export class AiRepository {
     conversationId: string,
     messageId: string,
     text: string,
-    productIds: ReadonlyArray<string>,
+    productRecommendations: ReadonlyArray<AiProductRecommendation>,
     askUser: AskUser | null,
   ): Promise<void> =>
     this.database.transaction(async (transaction) => {
@@ -242,12 +246,12 @@ export class AiRepository {
       }
       const productPosition = parts.length;
       parts.push(
-        ...productIds.map((productId, index) => ({
+        ...productRecommendations.map(({ productId, aiSummary }, index) => ({
           id: uuidv7(),
           messageId,
           kind: 'product_reference',
           position: productPosition + index,
-          payload: { productId },
+          payload: { productId, aiSummary },
         })),
       );
       await transaction.insert(messageParts).values(parts);

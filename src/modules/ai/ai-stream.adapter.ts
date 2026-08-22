@@ -22,10 +22,15 @@ export type AiStreamInput = Readonly<{
   image: Readonly<{ base64: string; mimeType: string }> | null;
 }>;
 
+export type AiProductRecommendation = Readonly<{
+  productId: string;
+  aiSummary: string;
+}>;
+
 export type AiStreamResult = Readonly<{
   messageId: string;
   text: string;
-  productIds: ReadonlyArray<string>;
+  productRecommendations: ReadonlyArray<AiProductRecommendation>;
   askUser: AskUser | null;
 }>;
 
