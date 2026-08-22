@@ -27,7 +27,6 @@ import type {
   AiStreamLifecycle,
   AiStreamResult,
 } from './ai-stream.adapter.js';
-import type { AskUser } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 
 export const COMMAND_CODE_FETCH = Symbol('COMMAND_CODE_FETCH');
@@ -39,42 +38,16 @@ const timeoutReason = 'shopport:ai-timeout';
 const streamClosedReason = 'shopport:stream-closed';
 const cancellationCheckFailedReason = 'shopport:cancellation-check-failed';
 
-export const askUserSchema = z
-  .object({
-    question: z.string().trim().min(1).max(160),
-    options: z
-      .array(
-        z.object({
-          id: z.string().trim().min(1).max(64),
-          label: z.string().trim().min(1).max(30),
-        }),
-      )
-      .min(2)
-      .max(4),
-    allowFreeText: z.boolean(),
-  })
-  .superRefine(({ options }, context) => {
-    if (new Set(options.map(({ id }) => id)).size !== options.length) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Option ids must be unique',
-        path: ['options'],
-      });
-    }
-  });
-
-const askUserDefinition = toolDefinition({
-  name: 'askUser',
-  description:
-    '추천을 실질적으로 바꾸는 필수 조건 하나를 짧은 한국어 질문과 선택지로 요청합니다. 채팅 본문에는 고르라는 문장을 쓰지 않습니다.',
-  inputSchema: askUserSchema,
-});
-
 const searchProductsDefinition = toolDefinition({
   name: 'searchProducts',
   description:
-    '승인된 쇼핑 provider에서 상품을 검색하고 neutral-v1 순서의 상품 카드를 반환합니다.',
-  inputSchema: z.object({ query: z.string().trim().min(1).max(200) }),
+    '다이소 또는 올리브영에서 최대 3개 상품을 검색합니다. 판매처를 말하지 않으면 daiso를 사용하고, 위치가 있으면 매장 재고도 확인합니다.',
+  inputSchema: z.object({
+    query: z.string().trim().min(1).max(200),
+    providerId: z.enum(['daiso', 'oliveyoung']).default('daiso'),
+    budgetMax: z.number().int().positive().optional(),
+    location: z.string().trim().min(1).max(100).optional(),
+  }),
 });
 
 const getProductDefinition = toolDefinition({
@@ -128,7 +101,6 @@ const createLifecycleMiddleware = (
   lifecycle: AiStreamLifecycle,
   terminal: TerminalState,
   productIds: ReadonlySet<string>,
-  askUserState: () => AskUser | null,
   assistantMessageId: string,
 ): ChatMiddleware => {
   let cancellationInterval: NodeJS.Timeout | undefined;
@@ -172,20 +144,18 @@ const createLifecycleMiddleware = (
       timeout.unref();
       pollCancellation();
     },
-    onShouldContinue: (): boolean => askUserState() === null,
     onFinish: async (_context, info): Promise<void> => {
       stop();
       const text = info.content.trim();
-      const askUser = askUserState();
-      if (!askUser && (info.finishReason !== 'stop' || text.length === 0)) {
+      if (info.finishReason !== 'stop' || text.length === 0) {
         await terminal.fail();
         throw new Error('Command Code returned an incomplete response');
       }
       await terminal.complete({
         messageId: assistantMessageId,
         text,
-        productIds: askUser ? [] : [...productIds],
-        askUser,
+        productIds: [...productIds],
+        askUser: null,
       });
     },
     onAbort: async (_context, info): Promise<void> => {
@@ -355,10 +325,7 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
     const productIds = new Set<string>();
     const abortController = new AbortController();
     const assistantMessageId = uuidv7();
-    let askUser: AskUser | null = null;
-    const commandCodeTools = this.createTools(tools, productIds, (value) => {
-      askUser = value;
-    });
+    const commandCodeTools = this.createTools(tools, productIds);
     const terminal = createTerminalState(lifecycle);
     const adapter = openaiCompatibleText(this.#model, {
       name: 'commandcode',
@@ -387,7 +354,6 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
           lifecycle,
           terminal,
           productIds,
-          () => askUser,
           assistantMessageId,
         ),
       ],
@@ -429,21 +395,23 @@ export class CommandCodeAiStreamAdapter implements AiStreamAdapter {
   private readonly createTools = (
     session: AiToolSession,
     productIds: Set<string>,
-    setAskUser: (askUser: AskUser) => void,
   ): ReadonlyArray<AnyServerTool> => [
-    searchProductsDefinition.server(async ({ query }) => {
-      const result = await session.searchProducts(query);
-      result.items.forEach(({ id }) => productIds.add(id));
-      return toAiProductResult(result.items);
-    }),
+    searchProductsDefinition.server(
+      async ({ query, providerId, budgetMax, location }) => {
+        const result = await session.searchProducts({
+          query,
+          providerId: providerId ?? 'daiso',
+          ...(budgetMax === undefined ? {} : { budgetMax }),
+          ...(location === undefined ? {} : { location }),
+        });
+        result.items.forEach(({ id }) => productIds.add(id));
+        return toAiProductResult(result.items);
+      },
+    ),
     getProductDefinition.server(async ({ id }) => {
       const product = await session.getProduct(id);
       if (product) productIds.add(product.id);
       return toAiProductResult(product ? [product] : []);
-    }),
-    askUserDefinition.server((input) => {
-      setAskUser(input);
-      return { waitingForUser: true };
     }),
   ];
 }

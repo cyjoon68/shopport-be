@@ -4,8 +4,15 @@ import type { CatalogProduct, CatalogSearchResult } from '../catalog/types.js';
 
 type CatalogReader = Pick<CatalogService, 'getProduct' | 'search'>;
 
+export type AiProductSearchInput = Readonly<{
+  query: string;
+  providerId?: 'daiso' | 'oliveyoung';
+  budgetMax?: number;
+  location?: string;
+}>;
+
 export type AiToolSession = Readonly<{
-  searchProducts: (query: string) => Promise<CatalogSearchResult>;
+  searchProducts: (input: AiProductSearchInput) => Promise<CatalogSearchResult>;
   getProduct: (id: string) => Promise<CatalogProduct | null>;
 }>;
 
@@ -22,9 +29,15 @@ export class AiTools {
       if (calls > 6) throw new Error('AI tool call limit exceeded');
     };
     return {
-      searchProducts: async (query): Promise<CatalogSearchResult> => {
+      searchProducts: async (input): Promise<CatalogSearchResult> => {
         count();
-        return this.catalog.search(query || '추천 상품', 4, null);
+        return this.catalog.search(input.query || '추천 상품', 3, null, {
+          providerId: input.providerId ?? 'daiso',
+          ...(input.budgetMax === undefined
+            ? {}
+            : { budgetMax: input.budgetMax }),
+          ...(input.location === undefined ? {} : { location: input.location }),
+        });
       },
       getProduct: async (id): Promise<CatalogProduct | null> => {
         count();

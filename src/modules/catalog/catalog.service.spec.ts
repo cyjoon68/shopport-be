@@ -4,6 +4,7 @@ import type { CatalogProduct, CatalogProvider } from './types.js';
 const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',
   providerId: 'test',
+  productCode: 'product-1',
   title: '상품',
   imageUrl: 'https://images.example.com/product.jpg',
   affiliate: false,
@@ -14,6 +15,9 @@ const product: CatalogProduct = {
   ratingConfidence: 1,
   freshnessEpochMs: 1,
   outboundUrl: 'https://evil.example/purchase',
+  store: null,
+  inventory: null,
+  evidence: [{ operation: 'products', fetchedAt: 1 }],
 };
 
 describe('CatalogService outbound policy', () => {

@@ -8,6 +8,7 @@ const product = (
 ): CatalogProduct => ({
   id,
   providerId,
+  productCode: id,
   title: id,
   imageUrl: 'https://example.com/product.jpg',
   affiliate: false,
@@ -18,6 +19,9 @@ const product = (
   ratingConfidence: 0.8,
   freshnessEpochMs: 1,
   outboundUrl: 'https://example.com/products/1',
+  store: null,
+  inventory: null,
+  evidence: [{ operation: 'products', fetchedAt: 1 }],
   ...overrides,
 });
 

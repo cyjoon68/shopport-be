@@ -3,6 +3,7 @@ import { CATALOG_PROVIDER } from './catalog.tokens.js';
 import type {
   CatalogProduct,
   CatalogProvider,
+  CatalogSearchInput,
   CatalogSearchResult,
 } from './types.js';
 
@@ -16,11 +17,16 @@ export class CatalogService {
     query: string,
     first: number,
     after: string | null,
+    filters: Pick<
+      CatalogSearchInput,
+      'providerId' | 'budgetMax' | 'location'
+    > = {},
   ): Promise<CatalogSearchResult> => {
     const result = await this.provider.search({
       query,
       first: Math.min(Math.max(first, 1), 50),
       after,
+      ...filters,
     });
     return { ...result, items: result.items.map(this.validateProduct) };
   };
