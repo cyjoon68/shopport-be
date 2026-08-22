@@ -3,12 +3,21 @@ import type { AiToolSession } from './ai-tools.js';
 
 export const AI_STREAM_ADAPTER = Symbol('AI_STREAM_ADAPTER');
 
+export const clarificationDimensions = [
+  'purpose',
+  'budget',
+  'requirement',
+] as const;
+
+export type ClarificationDimension = (typeof clarificationDimensions)[number];
+
 export type AiHistoryMessage = Readonly<{
   role: 'user' | 'assistant';
   text: string;
 }>;
 
 export type AskUser = Readonly<{
+  dimension: ClarificationDimension;
   question: string;
   options: ReadonlyArray<Readonly<{ id: string; label: string }>>;
   allowFreeText: boolean;

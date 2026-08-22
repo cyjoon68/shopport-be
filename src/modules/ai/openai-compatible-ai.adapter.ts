@@ -28,8 +28,16 @@ import type {
   AiStreamLifecycle,
   AiProductRecommendation,
   AiStreamResult,
+  AskUser,
 } from './ai-stream.adapter.js';
+import { clarificationDimensions } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
+import {
+  evaluateShoppingDeepMode,
+  shoppingAmbiguityThreshold,
+  shoppingRequestKinds,
+} from './shopping-deep-mode.js';
+import type { ShoppingDeepModeAssessment } from './shopping-deep-mode.js';
 
 export const AI_PROVIDER_FETCH = Symbol('AI_PROVIDER_FETCH');
 
@@ -39,6 +47,52 @@ const providerTimeoutMilliseconds = 45_000;
 const timeoutReason = 'shopport:ai-timeout';
 const streamClosedReason = 'shopport:stream-closed';
 const cancellationCheckFailedReason = 'shopport:cancellation-check-failed';
+const clarificationSkipMessage = '질문을 건너뛰고 현재 정보로 계속 진행해줘.';
+
+export const askUserSchema = z
+  .object({
+    dimension: z.enum(clarificationDimensions),
+    question: z.string().trim().min(1).max(160),
+    options: z
+      .array(
+        z.object({
+          id: z.string().trim().min(1).max(64),
+          label: z.string().trim().min(1).max(30),
+        }),
+      )
+      .min(2)
+      .max(4),
+    allowFreeText: z.boolean(),
+  })
+  .superRefine(({ options }, context) => {
+    if (new Set(options.map(({ id }) => id)).size !== options.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Option ids must be unique',
+        path: ['options'],
+      });
+    }
+  });
+
+const askUserDefinition = toolDefinition({
+  name: 'askUser',
+  description:
+    '추천 결과를 크게 바꾸는 지정된 조건 하나를 dimension에 기록하고, 짧은 한국어 질문과 2~4개 선택지로 확인합니다. 사용자가 선택하거나 자유 입력으로 답할 때까지 상품을 검색하거나 추천하지 않습니다.',
+  inputSchema: askUserSchema,
+});
+
+const assessShoppingAmbiguityDefinition = toolDefinition({
+  name: 'assessShoppingAmbiguity',
+  description:
+    '모든 텍스트 대화의 첫 단계에서 요청이 상품 탐색인지 분류하고, 상품 탐색이면 Deep Mode 방식으로 목표, 제약, 성공 기준 명확도를 각각 0~1로 평가합니다. 상품 탐색이 아니면 requestKind를 other로 하고 nextDimension은 null로 둡니다. 상품 탐색의 모호성 점수가 0.20보다 크면 가장 중요한 다음 질문 축을 nextDimension에 지정합니다. 내부 평가이며 사용자에게 보여주지 않습니다.',
+  inputSchema: z.object({
+    requestKind: z.enum(shoppingRequestKinds),
+    goalClarity: z.number().min(0).max(1),
+    constraintClarity: z.number().min(0).max(1),
+    successCriteriaClarity: z.number().min(0).max(1),
+    nextDimension: z.enum(clarificationDimensions).nullable(),
+  }),
+});
 
 const searchProductsDefinition = toolDefinition({
   name: 'searchProducts',
@@ -90,9 +144,30 @@ type ProductRecommendationState = {
   aiSummaries: Map<string, string>;
 };
 
+type DeepModeState = {
+  assessment: ShoppingDeepModeAssessment | null;
+  assessmentRequired: boolean;
+  searchedProducts: boolean;
+};
+
 const recommendationToolChoice = {
   type: 'function',
   function: { name: 'recordProductRecommendations' },
+};
+
+const askUserToolChoice = {
+  type: 'function',
+  function: { name: 'askUser' },
+};
+
+const searchProductsToolChoice = {
+  type: 'function',
+  function: { name: 'searchProducts' },
+};
+
+const ambiguityAssessmentToolChoice = {
+  type: 'function',
+  function: { name: 'assessShoppingAmbiguity' },
 };
 
 const expectedProductIds = (
@@ -163,6 +238,8 @@ const createLifecycleMiddleware = (
   lifecycle: AiStreamLifecycle,
   terminal: TerminalState,
   recommendationState: ProductRecommendationState,
+  deepModeState: DeepModeState,
+  askUserState: () => AskUser | null,
   assistantMessageId: string,
 ): ChatMiddleware => {
   let cancellationInterval: NodeJS.Timeout | undefined;
@@ -198,10 +275,26 @@ const createLifecycleMiddleware = (
     onConfig: (_context, config): Partial<ChatMiddlewareConfig> => {
       const modelOptions = { ...config.modelOptions };
       delete modelOptions.tool_choice;
+      const clarificationDimension =
+        deepModeState.assessment?.clarificationDimension ?? null;
+      const needsShoppingSearch =
+        deepModeState.assessment?.requestKind === 'shopping' &&
+        !deepModeState.searchedProducts;
       return {
-        modelOptions: recommendationsComplete(recommendationState)
+        modelOptions: askUserState()
           ? modelOptions
-          : { ...modelOptions, tool_choice: recommendationToolChoice },
+          : deepModeState.assessmentRequired && !deepModeState.assessment
+            ? {
+                ...modelOptions,
+                tool_choice: ambiguityAssessmentToolChoice,
+              }
+            : clarificationDimension
+              ? { ...modelOptions, tool_choice: askUserToolChoice }
+              : needsShoppingSearch
+                ? { ...modelOptions, tool_choice: searchProductsToolChoice }
+                : recommendationsComplete(recommendationState)
+                  ? modelOptions
+                  : { ...modelOptions, tool_choice: recommendationToolChoice },
       };
     },
     setup: (): void => {
@@ -215,22 +308,39 @@ const createLifecycleMiddleware = (
       timeout.unref();
       pollCancellation();
     },
+    onShouldContinue: (): boolean => askUserState() === null,
     onFinish: async (_context, info): Promise<void> => {
       stop();
       const text = info.content.trim();
+      const askUser = askUserState();
+      const needsAssessment =
+        deepModeState.assessmentRequired && !deepModeState.assessment;
+      const needsClarification =
+        deepModeState.assessment !== null &&
+        deepModeState.assessment.clarificationDimension !== null;
+      const needsSearch =
+        deepModeState.assessment?.requestKind === 'shopping' &&
+        !needsClarification &&
+        !deepModeState.searchedProducts;
       if (
-        info.finishReason !== 'stop' ||
-        text.length === 0 ||
-        !recommendationsComplete(recommendationState)
+        !askUser &&
+        (needsAssessment ||
+          needsClarification ||
+          needsSearch ||
+          info.finishReason !== 'stop' ||
+          text.length === 0 ||
+          !recommendationsComplete(recommendationState))
       ) {
         await terminal.fail();
         throw new Error('Command Code returned an incomplete response');
       }
       await terminal.complete({
         messageId: assistantMessageId,
-        text,
-        productRecommendations: productRecommendations(recommendationState),
-        askUser: null,
+        text: askUser ? '' : text,
+        productRecommendations: askUser
+          ? []
+          : productRecommendations(recommendationState),
+        askUser,
       });
     },
     onAbort: async (_context, info): Promise<void> => {
@@ -401,9 +511,24 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       productIds: new Set<string>(),
       aiSummaries: new Map<string, string>(),
     };
+    const deepModeState: DeepModeState = {
+      assessment: null,
+      assessmentRequired: input.image === null,
+      searchedProducts: false,
+    };
+    let askUser: AskUser | null = null;
     const abortController = new AbortController();
     const assistantMessageId = uuidv7();
-    const commandCodeTools = this.createTools(tools, recommendationState);
+    const commandCodeTools = this.createTools(
+      tools,
+      recommendationState,
+      deepModeState,
+      input.image === null,
+      input.text.trim() === clarificationSkipMessage,
+      (value) => {
+        askUser = value;
+      },
+    );
     const terminal = createTerminalState(lifecycle);
     const adapter = openaiCompatibleText(this.#model, {
       name: 'commandcode',
@@ -432,6 +557,8 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
           lifecycle,
           terminal,
           recommendationState,
+          deepModeState,
+          () => askUser,
           assistantMessageId,
         ),
       ],
@@ -473,9 +600,95 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
   private readonly createTools = (
     session: AiToolSession,
     recommendationState: ProductRecommendationState,
+    deepModeState: DeepModeState,
+    requiresDeepModeAssessment: boolean,
+    skipsClarification: boolean,
+    setAskUser: (askUser: AskUser) => void,
   ): ReadonlyArray<AnyServerTool> => [
+    assessShoppingAmbiguityDefinition.server((input) => {
+      const assessment = evaluateShoppingDeepMode(input);
+      if (
+        assessment.requestKind === 'shopping' &&
+        assessment.ambiguityScore !== null &&
+        assessment.ambiguityScore > shoppingAmbiguityThreshold &&
+        assessment.clarificationDimension === null &&
+        !skipsClarification
+      ) {
+        deepModeState.assessmentRequired = true;
+        return {
+          kind: 'invalid_ambiguity_assessment' as const,
+          ambiguityScore: assessment.ambiguityScore,
+          reason:
+            '모호성 점수가 임계값보다 높으면 nextDimension으로 다음 질문 축을 지정해야 합니다.',
+        };
+      }
+      deepModeState.assessment = {
+        ...assessment,
+        clarificationDimension: skipsClarification
+          ? null
+          : assessment.clarificationDimension,
+      };
+      return {
+        kind: 'shopping_ambiguity_assessment' as const,
+        requestKind: deepModeState.assessment.requestKind,
+        ambiguityScore: deepModeState.assessment.ambiguityScore,
+        clarificationDimension: deepModeState.assessment.clarificationDimension,
+      };
+    }),
+    askUserDefinition.server((input) => {
+      if (requiresDeepModeAssessment && !deepModeState.assessment) {
+        deepModeState.assessmentRequired = true;
+        return {
+          kind: 'ambiguity_assessment_required' as const,
+          reason: '질문 전에 Deep Mode 평가가 필요합니다.',
+        };
+      }
+      if (deepModeState.assessment?.requestKind === 'other') {
+        return {
+          kind: 'shopping_not_requested' as const,
+          reason: '상품 탐색 요청이 아니므로 추가 조건을 묻지 않습니다.',
+        };
+      }
+      const requiredClarificationDimension =
+        deepModeState.assessment?.clarificationDimension ?? null;
+      if (
+        requiredClarificationDimension &&
+        input.dimension !== requiredClarificationDimension
+      ) {
+        return {
+          kind: 'invalid_clarification' as const,
+          expectedDimension: requiredClarificationDimension,
+          reason:
+            '현재 모호성 게이트에서 가장 중요한 조건을 먼저 확인해야 합니다.',
+        };
+      }
+      setAskUser(input);
+      return { waitingForUser: true };
+    }),
     searchProductsDefinition.server(
       async ({ query, providerId, budgetMax, location }) => {
+        if (requiresDeepModeAssessment && !deepModeState.assessment) {
+          deepModeState.assessmentRequired = true;
+          return {
+            kind: 'ambiguity_assessment_required' as const,
+            reason: '상품 검색 전에 Deep Mode 평가가 필요합니다.',
+          };
+        }
+        if (deepModeState.assessment?.requestKind === 'other') {
+          return {
+            kind: 'shopping_not_requested' as const,
+            reason: '상품 탐색 요청이 아니므로 상품을 검색하지 않습니다.',
+          };
+        }
+        const requiredClarificationDimension =
+          deepModeState.assessment?.clarificationDimension ?? null;
+        if (requiredClarificationDimension) {
+          return {
+            kind: 'clarification_required' as const,
+            dimension: requiredClarificationDimension,
+            reason: '상품 검색 전에 모호성 게이트의 질문에 답해야 합니다.',
+          };
+        }
         const result = await session.searchProducts({
           query,
           providerId: providerId ?? 'daiso',
@@ -485,14 +698,55 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
         result.items.forEach(({ id }) =>
           recommendationState.productIds.add(id),
         );
+        deepModeState.searchedProducts = true;
         return toAiProductResult(result.items);
       },
     ),
     getProductDefinition.server(async ({ id }) => {
+      if (requiresDeepModeAssessment && !deepModeState.assessment) {
+        deepModeState.assessmentRequired = true;
+        return {
+          kind: 'ambiguity_assessment_required' as const,
+          reason: '상품 조회 전에 Deep Mode 평가가 필요합니다.',
+        };
+      }
+      if (deepModeState.assessment?.requestKind === 'other') {
+        return {
+          kind: 'shopping_not_requested' as const,
+          reason: '상품 탐색 요청이 아니므로 상품을 조회하지 않습니다.',
+        };
+      }
+      if (deepModeState.assessment?.clarificationDimension) {
+        return {
+          kind: 'clarification_required' as const,
+          dimension: deepModeState.assessment.clarificationDimension,
+          reason: '상품 조회 전에 모호성 게이트의 질문에 답해야 합니다.',
+        };
+      }
       const product = await session.getProduct(id);
       return toAiProductResult(product ? [product] : []);
     }),
     recordProductRecommendationsDefinition.server(({ recommendations }) => {
+      if (requiresDeepModeAssessment && !deepModeState.assessment) {
+        deepModeState.assessmentRequired = true;
+        return {
+          kind: 'ambiguity_assessment_required' as const,
+          reason: '추천 기록 전에 Deep Mode 평가가 필요합니다.',
+        };
+      }
+      if (deepModeState.assessment?.requestKind === 'other') {
+        return {
+          kind: 'shopping_not_requested' as const,
+          reason: '상품 탐색 요청이 아니므로 추천을 기록하지 않습니다.',
+        };
+      }
+      if (deepModeState.assessment?.clarificationDimension) {
+        return {
+          kind: 'clarification_required' as const,
+          dimension: deepModeState.assessment.clarificationDimension,
+          reason: '추천 기록 전에 모호성 게이트의 질문에 답해야 합니다.',
+        };
+      }
       if (!matchesExpectedProducts(recommendations, recommendationState)) {
         return {
           kind: 'invalid_product_recommendations' as const,
