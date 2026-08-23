@@ -19,6 +19,8 @@ import {
   messages,
 } from '../../database/schema.js';
 import { AiAccessError } from './ai.errors.js';
+import { providerIdsSchema } from './ai-request.js';
+import type { AiProviderId } from './ai-request.js';
 import type {
   AiHistoryMessage,
   AiProductRecommendation,
@@ -44,6 +46,17 @@ type NewMessagePart = {
 };
 
 export type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
+
+const providerIdsFromAskUser = (
+  payload: unknown,
+): ReadonlyArray<AiProviderId> => {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload))
+    return [];
+  const value = (payload as Record<string, unknown>).providerIds;
+  if (value === undefined) return [];
+  const parsed = providerIdsSchema.safeParse(value);
+  return parsed.success ? parsed.data : [];
+};
 
 @Injectable()
 export class AiRepository {
@@ -210,6 +223,7 @@ export class AiRepository {
     text: string,
     productRecommendations: ReadonlyArray<AiProductRecommendation>,
     askUser: AskUser | null,
+    providerIds: ReadonlyArray<AiProviderId> = [],
   ): Promise<void> =>
     this.database.transaction(async (transaction) => {
       const updated = await transaction
@@ -241,7 +255,8 @@ export class AiRepository {
           messageId,
           kind: 'ask_user',
           position: parts.length,
-          payload: askUser,
+          payload:
+            providerIds.length > 0 ? { ...askUser, providerIds } : askUser,
         });
       }
       const productPosition = parts.length;
@@ -256,6 +271,44 @@ export class AiRepository {
       );
       await transaction.insert(messageParts).values(parts);
     });
+
+  public pendingProviderIds = async (
+    accountId: string,
+    conversationId: string,
+  ): Promise<ReadonlyArray<AiProviderId>> => {
+    const latestAssistant = await this.database
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(
+        conversations,
+        and(
+          eq(conversations.id, messages.conversationId),
+          eq(conversations.accountId, accountId),
+        ),
+      )
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          eq(messages.role, 'assistant'),
+          eq(messages.status, 'completed'),
+        ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(1);
+    const messageId = latestAssistant.at(0)?.id;
+    if (!messageId) return [];
+    const askUser = await this.database
+      .select({ payload: messageParts.payload })
+      .from(messageParts)
+      .where(
+        and(
+          eq(messageParts.messageId, messageId),
+          eq(messageParts.kind, 'ask_user'),
+        ),
+      )
+      .limit(1);
+    return providerIdsFromAskUser(askUser.at(0)?.payload);
+  };
 
   public conversationHistory = async (
     accountId: string,

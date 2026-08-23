@@ -30,6 +30,7 @@ import type {
   AiStreamResult,
   AskUser,
 } from './ai-stream.adapter.js';
+import type { AiProviderId } from './ai-request.js';
 import { clarificationDimensions } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import {
@@ -97,7 +98,7 @@ const assessShoppingAmbiguityDefinition = toolDefinition({
 const searchProductsDefinition = toolDefinition({
   name: 'searchProducts',
   description:
-    '다이소 또는 올리브영에서 최대 3개 상품을 검색합니다. 판매처를 말하지 않으면 daiso를 사용하고, 위치가 있으면 매장 재고도 확인합니다.',
+    '다이소 또는 올리브영에서 최대 10개 상품을 검색합니다. 판매처를 말하지 않으면 daiso를 사용하고, 위치가 있으면 매장 재고도 확인합니다.',
   inputSchema: z.object({
     query: z.string().trim().min(1).max(200),
     providerId: z.enum(['daiso', 'oliveyoung']).nullish(),
@@ -125,7 +126,7 @@ const recordProductRecommendationsDefinition = toolDefinition({
         }),
       )
       .min(1)
-      .max(3),
+      .max(10),
   }),
 });
 
@@ -153,6 +154,16 @@ type DeepModeState = {
 const recommendationToolChoice = {
   type: 'function',
   function: { name: 'recordProductRecommendations' },
+};
+
+const providerConstraintPrompt = (
+  providerIds: ReadonlyArray<AiProviderId>,
+): string | null => {
+  if (providerIds.length === 0) return null;
+  const names = providerIds
+    .map((providerId) => (providerId === 'oliveyoung' ? '올리브영' : '다이소'))
+    .join(', ');
+  return `이번 요청의 판매처 조건은 ${names}이며 이미 확인된 조건입니다. 이 조건으로 추가 질문하지 말고, 상품 검색은 이 판매처 범위에서만 진행하세요.`;
 };
 
 const askUserToolChoice = {
@@ -539,10 +550,13 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       maxRetries: 1,
       timeout: providerTimeoutMilliseconds,
     });
+    const providerPrompt = providerConstraintPrompt(input.providerIds ?? []);
     const source = chat({
       adapter,
       messages: this.modelMessages(input),
-      systemPrompts: [systemPrompt],
+      systemPrompts: providerPrompt
+        ? [systemPrompt, providerPrompt]
+        : [systemPrompt],
       tools: commandCodeTools,
       modelOptions: {
         max_completion_tokens: this.#maxOutputTokens,

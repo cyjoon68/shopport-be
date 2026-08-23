@@ -34,7 +34,10 @@ export class AiService {
     if (!began) throw new ConflictException('Run already exists');
     await this.repository.heartbeatRun(request.storageRunId);
     try {
-      const tools = this.tools.createSession();
+      const providerIds = request.providerIdsSpecified
+        ? request.providerIds
+        : await this.repository.pendingProviderIds(accountId, request.threadId);
+      const tools = this.tools.createSession(providerIds);
       const history = await this.repository.conversationHistory(
         accountId,
         request.threadId,
@@ -48,6 +51,7 @@ export class AiService {
           threadId: request.threadId,
           runId: request.runId,
           text: request.text,
+          providerIds,
           history,
           image,
         },
@@ -61,6 +65,7 @@ export class AiService {
               result.text,
               result.productRecommendations,
               result.askUser,
+              providerIds,
             ),
           onFailure: () => this.repository.failRun(request.storageRunId),
           isCancelled: () =>
