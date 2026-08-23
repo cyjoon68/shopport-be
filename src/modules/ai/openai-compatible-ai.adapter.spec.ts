@@ -137,6 +137,36 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     ).toThrow();
   });
 
+  it('summarizes a prompt as a single-line conversation title', async () => {
+    const providerFetch = jest.fn<typeof fetch>().mockResolvedValue(
+      streamResponse([
+        completionChunk(
+          'chatcmpl-title',
+          {
+            role: 'assistant',
+            content: '“지성 피부에 맞는\n쿠션 파운데이션 추천.”',
+          },
+          null,
+        ),
+        completionChunk('chatcmpl-title', {}, 'stop'),
+      ]),
+    );
+    const adapter = new OpenAiCompatibleAiStreamAdapter(
+      new ConfigService<Environment, true>({
+        COMMAND_CODE_API_KEY: 'key',
+        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
+        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      }),
+      providerFetch,
+    );
+
+    await expect(
+      adapter.generateTitle('지성 피부에 맞는 쿠션 파데 추천해줘'),
+    ).resolves.toBe('지성 피부에 맞는 쿠션 파운데이션 추천');
+    const body = await requestBody(requiredCall(providerFetch.mock.calls, 0));
+    expect(body).toContain('Drawer용 한국어 대화 제목');
+  });
+
   it('forces the LLM through Deep Mode before a category-only recommendation', async () => {
     const providerFetch = jest
       .fn<typeof fetch>()

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { DATABASE } from '../../database/database.module.js';
 import type { Database } from '../../database/database.module.js';
@@ -20,6 +20,7 @@ import {
 } from '../../database/schema.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
+import { DEFAULT_CONVERSATION_TITLE } from '../conversations/conversation.types.js';
 import { AiAccessError } from './ai.errors.js';
 import { providerIdsSchema } from './ai-request.js';
 import type { AiProviderId } from './ai-request.js';
@@ -406,6 +407,24 @@ export class AiRepository {
       characters += message.text.length;
     }
     return bounded;
+  };
+
+  public replaceDefaultTitle = async (
+    accountId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<void> => {
+    await this.database
+      .update(conversations)
+      .set({ title, updatedAt: new Date() })
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.accountId, accountId),
+          eq(conversations.title, DEFAULT_CONVERSATION_TITLE),
+          isNull(conversations.deletedAt),
+        ),
+      );
   };
 
   public failRun = (runId: string): Promise<void> =>

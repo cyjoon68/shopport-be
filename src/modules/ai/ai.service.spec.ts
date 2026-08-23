@@ -5,6 +5,7 @@ import type { AssetsService } from '../assets/assets.service.js';
 import type { AiRepository } from './ai.repository.js';
 import type { AiProviderId } from './ai-request.js';
 import type {
+  AiHistoryMessage,
   AiStreamAdapter,
   AiStreamInput,
   AiStreamLifecycle,
@@ -25,6 +26,16 @@ type ServiceFixture = Readonly<{
     accountId: string,
     conversationId: string,
   ) => Promise<ReadonlyArray<AiProviderId>>;
+  conversationHistory: jest.MockedFunction<
+    (
+      accountId: string,
+      conversationId: string,
+    ) => Promise<ReadonlyArray<AiHistoryMessage>>
+  >;
+  generateTitle: jest.MockedFunction<(prompt: string) => Promise<string>>;
+  replaceDefaultTitle: jest.MockedFunction<
+    (accountId: string, conversationId: string, title: string) => Promise<void>
+  >;
   service: AiService;
 }>;
 
@@ -64,8 +75,22 @@ const createService = (): ServiceFixture => {
     >()
     .mockResolvedValue(['oliveyoung']);
   const conversationHistory = jest
-    .fn<() => Promise<ReadonlyArray<never>>>()
+    .fn<
+      (
+        accountId: string,
+        conversationId: string,
+      ) => Promise<ReadonlyArray<AiHistoryMessage>>
+    >()
     .mockResolvedValue([]);
+  const replaceDefaultTitle = jest
+    .fn<
+      (
+        accountId: string,
+        conversationId: string,
+        title: string,
+      ) => Promise<void>
+    >()
+    .mockResolvedValue();
   const createSession = jest
     .fn<(providerIds: ReadonlyArray<AiProviderId>) => AiToolSession>()
     .mockReturnValue({} as AiToolSession);
@@ -83,9 +108,14 @@ const createService = (): ServiceFixture => {
     heartbeatRun,
     pendingProviderIds,
     conversationHistory,
+    replaceDefaultTitle,
   } as unknown as AiRepository;
+  const generateTitle = jest
+    .fn<(prompt: string) => Promise<string>>()
+    .mockResolvedValue('립밤 상품 탐색');
   const stream = {
     requiresImageData: false,
+    generateTitle,
     createStream,
   } as unknown as AiStreamAdapter;
   return {
@@ -96,8 +126,11 @@ const createService = (): ServiceFixture => {
       {} as RedisRunCancellation,
       stream,
     ),
+    conversationHistory,
     createSession,
+    generateTitle,
     pendingProviderIds,
+    replaceDefaultTitle,
   };
 };
 
@@ -123,5 +156,37 @@ describe('AiService provider filters', () => {
       request.threadId,
     );
     expect(createSession).toHaveBeenCalledWith(['oliveyoung']);
+  });
+
+  it('titles a conversation from its first user prompt', async () => {
+    const fixture = createService();
+    const request = requestFor([]);
+    fixture.conversationHistory.mockResolvedValue([
+      { role: 'user', text: '립밤 찾아줘' },
+    ]);
+
+    await fixture.service.start(request.accountId, request.body);
+    await Promise.resolve();
+
+    expect(fixture.generateTitle).toHaveBeenCalledWith('립밤 찾아줘');
+    expect(fixture.replaceDefaultTitle).toHaveBeenCalledWith(
+      request.accountId,
+      request.threadId,
+      '립밤 상품 탐색',
+    );
+  });
+
+  it('does not regenerate a title after a follow-up prompt', async () => {
+    const fixture = createService();
+    const request = requestFor([]);
+    fixture.conversationHistory.mockResolvedValue([
+      { role: 'user', text: '립밤 찾아줘' },
+      { role: 'assistant', text: '어떤 용도인가요?' },
+      { role: 'user', text: '보습용' },
+    ]);
+
+    await fixture.service.start(request.accountId, request.body);
+
+    expect(fixture.generateTitle).not.toHaveBeenCalled();
   });
 });

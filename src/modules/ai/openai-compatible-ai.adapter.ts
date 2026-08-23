@@ -49,6 +49,21 @@ const timeoutReason = 'shopport:ai-timeout';
 const streamClosedReason = 'shopport:stream-closed';
 const cancellationCheckFailedReason = 'shopport:cancellation-check-failed';
 const clarificationSkipMessage = '질문을 건너뛰고 현재 정보로 계속 진행해줘.';
+const conversationTitleLength = 24;
+const conversationTitlePrompt =
+  '사용자의 첫 쇼핑 질문을 Drawer용 한국어 대화 제목으로 바꾸세요. 제목만 출력하고, 공백 포함 12~24자의 명사형으로 핵심 상품과 목적을 표현하며 자연스러운 한국어 띄어쓰기를 지키세요. 원문 인용, 설명, 접두어, 따옴표, 마침표는 쓰지 마세요.';
+
+const normalizeConversationTitle = (value: string): string => {
+  const title = value
+    .trim()
+    .replace(/^["'“”‘’「」『』]+/gu, '')
+    .replace(/\s+/gu, ' ')
+    .split(/["'“”‘’「」『』:：]/u)[0]
+    ?.replace(/[.!?]+$/gu, '')
+    .trim();
+  if (!title) throw new Error('Conversation title is empty');
+  return Array.from(title).slice(0, conversationTitleLength).join('');
+};
 
 export const askUserSchema = z
   .object({
@@ -510,14 +525,23 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
     });
   }
 
+  public generateTitle = async (prompt: string): Promise<string> => {
+    const title = await chat({
+      adapter: this.createTextAdapter(),
+      messages: [{ role: 'user', content: prompt }],
+      systemPrompts: [conversationTitlePrompt],
+      modelOptions: { max_completion_tokens: 48 },
+      stream: false,
+      debug: false,
+    });
+    return normalizeConversationTitle(title);
+  };
+
   public createStream = (
     input: AiStreamInput,
     tools: AiToolSession,
     lifecycle: AiStreamLifecycle,
   ): AsyncIterable<StreamChunk> => {
-    if (!this.#apiKey) {
-      throw new Error('COMMAND_CODE_API_KEY is required');
-    }
     const recommendationState: ProductRecommendationState = {
       productIds: new Set<string>(),
       aiSummaries: new Map<string, string>(),
@@ -541,15 +565,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       },
     );
     const terminal = createTerminalState(lifecycle);
-    const adapter = openaiCompatibleText(this.#model, {
-      name: 'commandcode',
-      apiKey: this.#apiKey,
-      baseURL: providerBaseUrl,
-      defaultHeaders: { 'x-cmd-zdr': '1' },
-      fetch: this.providerFetch,
-      maxRetries: 1,
-      timeout: providerTimeoutMilliseconds,
-    });
+    const adapter = this.createTextAdapter();
     const providerPrompt = providerConstraintPrompt(input.providerIds ?? []);
     const source = chat({
       adapter,
@@ -585,6 +601,21 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       terminal,
       assistantMessageId,
     );
+  };
+
+  private readonly createTextAdapter = (): ReturnType<
+    typeof openaiCompatibleText
+  > => {
+    if (!this.#apiKey) throw new Error('COMMAND_CODE_API_KEY is required');
+    return openaiCompatibleText(this.#model, {
+      name: 'commandcode',
+      apiKey: this.#apiKey,
+      baseURL: providerBaseUrl,
+      defaultHeaders: { 'x-cmd-zdr': '1' },
+      fetch: this.providerFetch,
+      maxRetries: 1,
+      timeout: providerTimeoutMilliseconds,
+    });
   };
 
   private readonly modelMessages = (input: AiStreamInput): ModelMessage[] => {

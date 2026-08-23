@@ -1,3 +1,5 @@
+export const DEFAULT_CONVERSATION_TITLE = '새 쇼핑 대화';
+
 export type ConversationRecord = Readonly<{
   id: string;
   title: string;
