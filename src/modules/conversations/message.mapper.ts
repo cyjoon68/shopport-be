@@ -9,10 +9,42 @@ import type {
 } from './conversation.types.js';
 
 const textPayload = z.object({ text: z.string() });
-const productPayload = z.object({
-  productId: z.uuid(),
-  aiSummary: z.string().trim().min(1).max(80).optional(),
+const moneyPayload = z.object({
+  amountMinor: z.string(),
+  currency: z.string(),
 });
+const productSnapshotPayload = z.object({
+  id: z.uuid(),
+  provider: z.object({ providerId: z.string(), displayName: z.string() }),
+  title: z.string(),
+  imageUrl: z.url(),
+  isAffiliate: z.boolean(),
+  isSaved: z.boolean(),
+  offer: z.object({
+    id: z.uuid(),
+    price: moneyPayload,
+    shipping: moneyPayload,
+    total: moneyPayload,
+    isInStock: z.boolean(),
+    deliveryExpectedAt: z.coerce.date().nullable(),
+    observedAt: z.coerce.date(),
+    outboundUrl: z.url(),
+  }),
+});
+const productPayload = z
+  .object({
+    productId: z.uuid(),
+    aiSummary: z.string().trim().min(1).max(80).optional(),
+    productSnapshot: productSnapshotPayload.nullish(),
+  })
+  .refine(
+    ({ productId, productSnapshot }) =>
+      !productSnapshot || productSnapshot.id === productId,
+    {
+      message: 'Product snapshot ID must match the reference',
+      path: ['productSnapshot'],
+    },
+  );
 const askUserPayload = z.object({
   question: z.string(),
   options: z.array(z.object({ id: z.string(), label: z.string() })),
@@ -44,12 +76,16 @@ const mapPart = async (
   if (part.kind === 'product_reference') {
     const payload = productPayload.safeParse(part.payload);
     if (!payload.success) return null;
-    const product = await catalog.getProduct(payload.data.productId);
+    const product =
+      payload.data.productSnapshot ??
+      (await catalog
+        .getProduct(payload.data.productId)
+        .then((result) => (result ? toProductGraphql(result) : null)));
     return product
       ? {
           __typename: 'ProductReferenceMessagePart',
           id: part.id,
-          product: toProductGraphql(product),
+          product,
           aiSummary: payload.data.aiSummary ?? null,
         }
       : null;
