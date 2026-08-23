@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type { CatalogProduct } from '../catalog/types.js';
 import { mapMessages } from './message.mapper.js';
@@ -47,6 +48,7 @@ describe('mapMessages', () => {
               { id: 'under-5', label: '5만원 이하' },
             ],
             allowFreeText: true,
+            providerIds: ['oliveyoung'],
           },
         },
       ],
@@ -63,6 +65,49 @@ describe('mapMessages', () => {
         ],
         allowFreeText: true,
       },
+    ]);
+  });
+
+  it('uses a stored product snapshot after the catalog cache is cleared', async () => {
+    const snapshot = toProductGraphql(product);
+    const messages = await mapMessages(
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000011',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          role: 'assistant',
+          status: 'completed',
+          createdAt: new Date('2026-08-14T00:00:00Z'),
+        },
+      ],
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000012',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'product_reference',
+          position: 0,
+          payload: {
+            productId: product.id,
+            aiSummary:
+              '건조함을 줄이는 데 쓸 수 있고 재고가 확인된 립밤이에요.',
+            productSnapshot: {
+              ...snapshot,
+              offer: {
+                ...snapshot.offer,
+                observedAt: snapshot.offer.observedAt.toISOString(),
+              },
+            },
+          },
+        },
+      ],
+      { getProduct: () => Promise.resolve(null) } as unknown as CatalogService,
+    );
+
+    expect(messages[0]?.parts).toEqual([
+      expect.objectContaining({
+        __typename: 'ProductReferenceMessagePart',
+        product: expect.objectContaining({ id: product.id }),
+      }),
     ]);
   });
 

@@ -18,6 +18,8 @@ import {
   messageParts,
   messages,
 } from '../../database/schema.js';
+import { toProductGraphql } from '../catalog/catalog.mapper.js';
+import { CatalogService } from '../catalog/catalog.service.js';
 import { AiAccessError } from './ai.errors.js';
 import { providerIdsSchema } from './ai-request.js';
 import type { AiProviderId } from './ai-request.js';
@@ -60,7 +62,10 @@ const providerIdsFromAskUser = (
 
 @Injectable()
 export class AiRepository {
-  public constructor(@Inject(DATABASE) private readonly database: Database) {}
+  public constructor(
+    @Inject(DATABASE) private readonly database: Database,
+    private readonly catalog: CatalogService,
+  ) {}
 
   public beginRun = (input: BeginRunInput): Promise<boolean> =>
     this.database.transaction(async (transaction) => {
@@ -216,7 +221,7 @@ export class AiRepository {
       return true;
     });
 
-  public completeRun = (
+  public completeRun = async (
     runId: string,
     conversationId: string,
     messageId: string,
@@ -224,8 +229,17 @@ export class AiRepository {
     productRecommendations: ReadonlyArray<AiProductRecommendation>,
     askUser: AskUser | null,
     providerIds: ReadonlyArray<AiProviderId> = [],
-  ): Promise<void> =>
-    this.database.transaction(async (transaction) => {
+  ): Promise<void> => {
+    const productSnapshots = new Map<
+      string,
+      ReturnType<typeof toProductGraphql>
+    >();
+    for (const product of await this.catalog.getProducts(
+      productRecommendations.map(({ productId }) => productId),
+    )) {
+      if (product) productSnapshots.set(product.id, toProductGraphql(product));
+    }
+    return this.database.transaction(async (transaction) => {
       const updated = await transaction
         .update(aiRuns)
         .set({ status: 'completed', completedAt: new Date() })
@@ -266,11 +280,16 @@ export class AiRepository {
           messageId,
           kind: 'product_reference',
           position: productPosition + index,
-          payload: { productId, aiSummary },
+          payload: {
+            productId,
+            aiSummary,
+            productSnapshot: productSnapshots.get(productId) ?? null,
+          },
         })),
       );
       await transaction.insert(messageParts).values(parts);
     });
+  };
 
   public pendingProviderIds = async (
     accountId: string,
