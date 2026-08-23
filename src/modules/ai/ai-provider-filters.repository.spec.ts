@@ -1,6 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { Database } from '../../database/database.module.js';
-import type { CatalogService } from '../catalog/catalog.service.js';
 import { AiRepository } from './ai.repository.js';
 
 const askUser = {
@@ -13,13 +12,14 @@ const askUser = {
   allowFreeText: true,
 } as const;
 
+type RepositoryConstructor = new (
+  ...args: ReadonlyArray<unknown>
+) => AiRepository;
+
 const repositoryFor = (database: Database): AiRepository =>
-  Reflect.construct(AiRepository, [
-    database,
-    {
-      getProducts: (): Promise<Array<never>> => Promise.resolve([]),
-    } as unknown as CatalogService,
-  ]);
+  new (AiRepository as unknown as RepositoryConstructor)(database, {
+    getProducts: (): Promise<Array<never>> => Promise.resolve([]),
+  });
 
 describe('AiRepository provider filters', () => {
   it('stores selected providers only in the internal clarification payload', async () => {
