@@ -8,6 +8,9 @@ import { AiTools } from './ai-tools.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import type { AiStreamAdapter } from './ai-stream.adapter.js';
 
+const fallbackConversationTitle = (prompt: string): string =>
+  Array.from(prompt.replace(/\s+/gu, ' ').trim()).slice(0, 24).join('');
+
 @Injectable()
 export class AiService {
   public constructor(
@@ -42,6 +45,21 @@ export class AiService {
         accountId,
         request.threadId,
       );
+      const userPrompts = history.filter(({ role }) => role === 'user');
+      const titleUpdate =
+        userPrompts.length === 1
+          ? this.stream
+              .generateTitle(userPrompts[0]?.text ?? request.text)
+              .catch(() => fallbackConversationTitle(request.text))
+              .then((title) =>
+                this.repository.replaceDefaultTitle(
+                  accountId,
+                  request.threadId,
+                  title,
+                ),
+              )
+              .catch(() => undefined)
+          : Promise.resolve();
       const image =
         request.assetId && this.stream.requiresImageData
           ? await this.assets.readNormalizedImage(accountId, request.assetId)
@@ -57,16 +75,20 @@ export class AiService {
         },
         tools,
         {
-          onComplete: (result) =>
-            this.repository.completeRun(
-              request.storageRunId,
-              request.threadId,
-              result.messageId,
-              result.text,
-              result.productRecommendations,
-              result.askUser,
-              providerIds,
-            ),
+          onComplete: async (result): Promise<void> => {
+            await Promise.all([
+              this.repository.completeRun(
+                request.storageRunId,
+                request.threadId,
+                result.messageId,
+                result.text,
+                result.productRecommendations,
+                result.askUser,
+                providerIds,
+              ),
+              titleUpdate,
+            ]);
+          },
           onFailure: () => this.repository.failRun(request.storageRunId),
           isCancelled: () =>
             this.cancellation.isCancelled(request.storageRunId),

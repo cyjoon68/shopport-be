@@ -53,6 +53,7 @@ export type AiStreamLifecycle = Readonly<{
 
 export interface AiStreamAdapter {
   readonly requiresImageData: boolean;
+  generateTitle(prompt: string): Promise<string>;
   createStream(
     input: AiStreamInput,
     tools: AiToolSession,

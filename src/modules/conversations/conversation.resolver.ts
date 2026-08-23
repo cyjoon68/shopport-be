@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ConversationService } from './conversation.service.js';
 import type { ConversationConnection } from './conversation.service.js';
+import { DEFAULT_CONVERSATION_TITLE } from './conversation.types.js';
 import type {
   ConversationRecord,
   MessageGraphql,
@@ -100,7 +101,7 @@ export class ConversationResolver {
     return {
       conversation: await this.conversations.create(
         viewerIdFrom(request),
-        parsed.data.title ?? '새 쇼핑 대화',
+        parsed.data.title ?? DEFAULT_CONVERSATION_TITLE,
       ),
       userErrors: [],
     };
