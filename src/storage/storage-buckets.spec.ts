@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+
 import type { Environment } from '../config/environment.js';
 import { storageBucketsFromConfig } from './storage-buckets.js';
 

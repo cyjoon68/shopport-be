@@ -1,12 +1,13 @@
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { StreamChunk } from '@tanstack/ai';
+
 import { AssetsService } from '../assets/assets.service.js';
 import { AiRepository } from './ai.repository.js';
 import { parseAiRequest, storageRunIdFor } from './ai-request.js';
-import { RedisRunCancellation } from './redis-run-cancellation.js';
-import { AiTools } from './ai-tools.js';
-import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import type { AiStreamAdapter } from './ai-stream.adapter.js';
+import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
+import { AiTools } from './ai-tools.js';
+import { RedisRunCancellation } from './redis-run-cancellation.js';
 
 const fallbackConversationTitle = (prompt: string): string =>
   Array.from(prompt.replace(/\s+/gu, ' ').trim()).slice(0, 24).join('');

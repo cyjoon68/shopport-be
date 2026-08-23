@@ -6,9 +6,10 @@ import {
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import type { S3Event, S3EventRecord } from 'aws-lambda';
 import { z } from 'zod';
+
 import {
-  assetResultSchema,
   type AssetResult,
+  assetResultSchema,
 } from './modules/assets/asset-result.js';
 import { normalizeImage } from './modules/assets/normalize-image.js';
 

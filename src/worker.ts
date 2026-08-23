@@ -1,10 +1,12 @@
 import 'reflect-metadata';
+
 import { NestFactory } from '@nestjs/core';
+
+import { ArchiveWriter } from './modules/archive/archive.writer.js';
 import { AssetResultConsumer } from './worker/asset-result.consumer.js';
 import { OutboxProcessor } from './worker/outbox.processor.js';
 import { StaleRunRecovery } from './worker/stale-run-recovery.js';
 import { WorkerModule } from './worker/worker.module.js';
-import { ArchiveWriter } from './modules/archive/archive.writer.js';
 
 const recoveryCadenceMilliseconds = 30_000;
 

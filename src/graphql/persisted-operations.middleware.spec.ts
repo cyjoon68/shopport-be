@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+
 import { ConfigService } from '@nestjs/config';
 import type { NextFunction, Request, Response } from 'express';
 import { stripIgnoredCharacters } from 'graphql';
+
 import type { Environment } from '../config/environment.js';
 import { PersistedOperationsMiddleware } from './persisted-operations.middleware.js';
 

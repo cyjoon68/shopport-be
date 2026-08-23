@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { ThrottlerStorage } from '@nestjs/throttler';
 import { z } from 'zod';
-import { REDIS } from './redis.module.js';
+
 import type { RedisClient } from './redis.module.js';
+import { REDIS } from './redis.module.js';
 
 const resultSchema = z.tuple([z.number(), z.number(), z.number(), z.number()]);
 const incrementScript = `

@@ -1,5 +1,5 @@
-import { GraphQLError, GraphQLScalarType, Kind } from 'graphql';
 import type { ValueNode } from 'graphql';
+import { GraphQLError, GraphQLScalarType, Kind } from 'graphql';
 
 const stringValue = (value: unknown, scalar: string): string => {
   if (typeof value === 'string') return value;

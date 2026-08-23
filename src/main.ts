@@ -1,9 +1,12 @@
 import 'reflect-metadata';
+
 import { randomUUID } from 'node:crypto';
+
 import { NestFactory } from '@nestjs/core';
-import type { Request, Response, NextFunction } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
+
 import { AppModule } from './app.module.js';
 
 const bootstrap = async (): Promise<void> => {

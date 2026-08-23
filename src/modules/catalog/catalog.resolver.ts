@@ -1,8 +1,9 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { z } from 'zod';
+
 import { CatalogLoader } from './catalog.loader.js';
-import { toProductGraphql, productCursor } from './catalog.mapper.js';
 import type { ProductGraphql } from './catalog.mapper.js';
+import { productCursor, toProductGraphql } from './catalog.mapper.js';
 import { CatalogService } from './catalog.service.js';
 
 type ProductConnection = Readonly<{

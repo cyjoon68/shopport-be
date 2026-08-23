@@ -3,9 +3,9 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   HttpException,
   HttpStatus,
-  HttpCode,
   Inject,
   Post,
   Query,
@@ -16,17 +16,18 @@ import { Throttle } from '@nestjs/throttler';
 import { resumeHttpResponse, toHttpResponse } from '@tanstack/ai';
 import type { Response as ExpressResponse } from 'express';
 import { z } from 'zod';
-import { REDIS } from '../../redis/redis.module.js';
+
 import type { RedisClient } from '../../redis/redis.module.js';
-import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
+import { REDIS } from '../../redis/redis.module.js';
+import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import { AiAccessError } from './ai.errors.js';
+import { AiService } from './ai.service.js';
 import {
   AiRequestValidationError,
   parseRunReference,
   runIdSchema,
   storageRunIdFor,
 } from './ai-request.js';
-import { AiService } from './ai.service.js';
 import { RedisStreamDurability } from './redis-stream-durability.js';
 
 const resumeQuerySchema = z.object({

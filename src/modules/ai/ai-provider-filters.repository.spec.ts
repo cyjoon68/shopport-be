@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
+
 import type { Database } from '../../database/database.module.js';
 import { AiRepository } from './ai.repository.js';
 

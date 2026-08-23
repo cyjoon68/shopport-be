@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+
 import { stripIgnoredCharacters } from 'graphql';
+
 import { validateEnvironment } from './environment.js';
 
 const persistedDocument = 'query Viewer { viewer { id } }';

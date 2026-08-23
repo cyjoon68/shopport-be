@@ -1,11 +1,11 @@
-import { GraphQLError, Kind } from 'graphql';
 import type {
-  FieldNode,
   DefinitionNode,
+  FieldNode,
   FragmentDefinitionNode,
   SelectionSetNode,
   ValidationRule,
 } from 'graphql';
+import { GraphQLError, Kind } from 'graphql';
 
 const fragmentsFrom = (
   definitions: ReadonlyArray<DefinitionNode>,

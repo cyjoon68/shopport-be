@@ -1,7 +1,8 @@
 import type { S3Event } from 'aws-lambda';
 import { v7 as uuidv7 } from 'uuid';
-import type { AssetResult } from './modules/assets/asset-result.js';
+
 import { processImageEvent } from './image-processor.js';
+import type { AssetResult } from './modules/assets/asset-result.js';
 
 describe('image processor bucket contract', () => {
   it('reads the raw event object and writes only to the normalized bucket', async () => {

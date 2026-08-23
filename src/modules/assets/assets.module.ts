@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+
 import { AssetsRepository } from './assets.repository.js';
 import { AssetsResolver } from './assets.resolver.js';
 import { AssetsService } from './assets.service.js';

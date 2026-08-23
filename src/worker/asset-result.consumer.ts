@@ -6,9 +6,10 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq } from 'drizzle-orm';
+
 import type { Environment } from '../config/environment.js';
-import { DATABASE } from '../database/database.module.js';
 import type { Database } from '../database/database.module.js';
+import { DATABASE } from '../database/database.module.js';
 import { assets } from '../database/schema.js';
 import { assetResultSchema } from '../modules/assets/asset-result.js';
 

@@ -6,9 +6,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { z } from 'zod';
+
+import { Public } from '../../common/public.decorator.js';
 import { AuthService } from './auth.service.js';
 import type { TokenPair } from './auth.types.js';
-import { Public } from '../../common/public.decorator.js';
 
 const loginSchema = z.object({
   identityToken: z.string().min(1),

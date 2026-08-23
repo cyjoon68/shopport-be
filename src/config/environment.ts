@@ -1,4 +1,5 @@
 import { z } from 'zod';
+
 import { parsePersistedOperationManifest } from '../graphql/persisted-operation-manifest.js';
 
 const environmentSchema = z

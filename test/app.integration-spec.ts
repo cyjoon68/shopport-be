@@ -1,23 +1,24 @@
 import type { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { Test } from '@nestjs/testing';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
 import request from 'supertest';
-import { GenericContainer } from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
+import { GenericContainer } from 'testcontainers';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
+
+import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
+import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import type {
   AuthProvider,
   VerifiedIdentity,
 } from '../src/modules/auth/auth.types.js';
 import { ProviderTokenVerifier } from '../src/modules/auth/provider-token-verifier.js';
-import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
-import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type {

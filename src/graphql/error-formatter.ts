@@ -1,6 +1,6 @@
 import { HttpException } from '@nestjs/common';
-import { GraphQLError } from 'graphql';
 import type { GraphQLFormattedError } from 'graphql';
+import { GraphQLError } from 'graphql';
 import { ZodError } from 'zod';
 
 const codeForStatus = (status: number): string => {

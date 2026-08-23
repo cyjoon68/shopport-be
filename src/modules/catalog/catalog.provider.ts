@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { v5 as uuidv5 } from 'uuid';
 import { z } from 'zod';
+
 import { rankProducts } from './neutral-ranking.js';
 import type {
   CatalogProduct,

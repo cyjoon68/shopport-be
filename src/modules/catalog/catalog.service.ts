@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+
 import { CATALOG_PROVIDER } from './catalog.tokens.js';
 import type {
   CatalogProduct,

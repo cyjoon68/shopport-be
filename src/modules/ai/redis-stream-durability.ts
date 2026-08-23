@@ -1,6 +1,7 @@
-import { EventType } from '@tanstack/ai';
 import type { StreamChunk, StreamDurability } from '@tanstack/ai';
+import { EventType } from '@tanstack/ai';
 import { z } from 'zod';
+
 import type { RedisClient } from '../../redis/redis.module.js';
 
 const ttlSeconds = 60 * 60;

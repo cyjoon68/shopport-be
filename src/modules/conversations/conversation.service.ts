@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
+
 import { decodeCursor, encodeCursor } from '../../common/cursor.js';
-import type { ConversationRecord } from './conversation.types.js';
 import { ConversationRepository } from './conversation.repository.js';
+import type { ConversationRecord } from './conversation.types.js';
 
 export type ConversationConnection = Readonly<{
   edges: ReadonlyArray<Readonly<{ cursor: string; node: ConversationRecord }>>;

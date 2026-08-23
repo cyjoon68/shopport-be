@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
+
 import type { Database } from '../../database/database.module.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type { CatalogProduct } from '../catalog/types.js';
