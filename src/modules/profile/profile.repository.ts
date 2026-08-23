@@ -44,6 +44,19 @@ export class ProfileRepository {
     return rows.at(0) ?? null;
   }
 
+  public async updateDisplayName(
+    accountId: string,
+    displayName: string,
+  ): Promise<ViewerRecord | null> {
+    const rows = await this.database
+      .update(accounts)
+      .set({ displayName, updatedAt: new Date() })
+      .where(and(eq(accounts.id, accountId), isNull(accounts.deletedAt)))
+      .returning({ id: accounts.id });
+    if (rows.length === 0) return null;
+    return this.viewer(accountId);
+  }
+
   public async deleteAccount(accountId: string): Promise<boolean> {
     const deletedAt = new Date();
     return this.database.transaction(async (transaction) => {

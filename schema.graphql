@@ -319,6 +319,12 @@ input DeleteAssetInput {
   id: UUID!
 }
 
+"Input for updating the authenticated viewer."
+input UpdateViewerInput {
+  "The user-facing nickname."
+  displayName: String!
+}
+
 "An expected mutation error."
 type UserError {
   "A stable application error code."
@@ -341,6 +347,14 @@ type ConversationPayload {
 type DeletePayload {
   "Whether deletion was accepted."
   success: Boolean!
+  "Expected input and business errors."
+  userErrors: [UserError!]!
+}
+
+"The result of a viewer update."
+type ViewerPayload {
+  "The updated viewer when successful."
+  viewer: Viewer
   "Expected input and business errors."
   userErrors: [UserError!]!
 }
@@ -417,6 +431,8 @@ type Mutation {
   createAssetUpload(input: CreateAssetUploadInput!): AssetUploadPayload!
   "Deletes an uploaded asset."
   deleteAsset(input: DeleteAssetInput!): DeletePayload!
+  "Updates the authenticated viewer profile."
+  updateViewer(input: UpdateViewerInput!): ViewerPayload!
   "Immediately blocks access and schedules complete account purge."
   deleteViewerAccount: DeletePayload!
 }
