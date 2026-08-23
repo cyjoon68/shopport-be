@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+
 import { CatalogService } from '../catalog/catalog.service.js';
 import { rankProducts } from '../catalog/neutral-ranking.js';
 import type { CatalogProduct, CatalogSearchResult } from '../catalog/types.js';

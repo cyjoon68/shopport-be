@@ -9,9 +9,10 @@ import { GqlExecutionContext } from '@nestjs/graphql';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { z } from 'zod';
+
 import { IS_PUBLIC } from '../../common/public.decorator.js';
-import type { AccessClaims } from './auth.types.js';
 import { AuthRepository } from './auth.repository.js';
+import type { AccessClaims } from './auth.types.js';
 
 const accessClaimsSchema = z.object({
   sub: z.uuid(),

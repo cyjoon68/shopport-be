@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type { CatalogProduct } from '../catalog/types.js';

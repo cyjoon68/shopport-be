@@ -1,9 +1,10 @@
-import { Args, Context, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { NotFoundException } from '@nestjs/common';
+import { Args, Context, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { z } from 'zod';
-import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
-import { ProfileRepository } from './profile.repository.js';
+
+import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import type { ViewerRecord } from './profile.repository.js';
+import { ProfileRepository } from './profile.repository.js';
 
 type ViewerGraphql = Readonly<{
   id: string;

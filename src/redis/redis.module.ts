@@ -7,8 +7,9 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
+import { createClient } from 'redis';
+
 import type { Environment } from '../config/environment.js';
 
 export const REDIS = Symbol('REDIS');

@@ -8,14 +8,15 @@ import {
   Resolver,
 } from '@nestjs/graphql';
 import { z } from 'zod';
-import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
-import { ConversationService } from './conversation.service.js';
+
+import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import type { ConversationConnection } from './conversation.service.js';
-import { DEFAULT_CONVERSATION_TITLE } from './conversation.types.js';
+import { ConversationService } from './conversation.service.js';
 import type {
   ConversationRecord,
   MessageGraphql,
 } from './conversation.types.js';
+import { DEFAULT_CONVERSATION_TITLE } from './conversation.types.js';
 import { MessageLoader } from './message.loader.js';
 
 type UserError = Readonly<{

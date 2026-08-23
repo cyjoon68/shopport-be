@@ -1,5 +1,6 @@
 import { Injectable, Scope } from '@nestjs/common';
 import DataLoader from 'dataloader';
+
 import { CatalogService } from './catalog.service.js';
 import type { CatalogProduct } from './types.js';
 

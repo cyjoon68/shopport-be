@@ -1,7 +1,8 @@
 import { Injectable, Scope } from '@nestjs/common';
 import DataLoader from 'dataloader';
-import { CatalogService } from '../catalog/catalog.service.js';
+
 import { ArchiveReader } from '../archive/archive.reader.js';
+import { CatalogService } from '../catalog/catalog.service.js';
 import { ConversationRepository } from './conversation.repository.js';
 import type { MessageGraphql } from './conversation.types.js';
 import { mapMessages } from './message.mapper.js';

@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { DATABASE } from '../database/database.module.js';
+
 import type { Database } from '../database/database.module.js';
+import { DATABASE } from '../database/database.module.js';
 import {
   accounts,
   aiRuns,
@@ -12,8 +13,8 @@ import {
   messages,
   outbox,
 } from '../database/schema.js';
-import { REDIS } from '../redis/redis.module.js';
 import type { RedisClient } from '../redis/redis.module.js';
+import { REDIS } from '../redis/redis.module.js';
 import { ObjectStore } from '../storage/object-store.js';
 
 const accountPayload = z.object({ accountId: z.uuid() });

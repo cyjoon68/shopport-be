@@ -8,9 +8,10 @@ import {
 } from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+
 import type { Environment } from '../config/environment.js';
-import { storageBucketsFromConfig } from './storage-buckets.js';
 import type { StorageBucket, StorageBuckets } from './storage-buckets.js';
+import { storageBucketsFromConfig } from './storage-buckets.js';
 
 const localCredentials = { accessKeyId: 'test', secretAccessKey: 'test' };
 

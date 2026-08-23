@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { inArray } from 'drizzle-orm';
-import { DATABASE } from '../../database/database.module.js';
+
 import type { Database } from '../../database/database.module.js';
+import { DATABASE } from '../../database/database.module.js';
 import { archiveManifests } from '../../database/schema.js';
 import { ObjectStore } from '../../storage/object-store.js';
 import type {

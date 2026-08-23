@@ -1,6 +1,7 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
+
 import type { Environment } from '../config/environment.js';
 import { ObjectStore } from './object-store.js';
 

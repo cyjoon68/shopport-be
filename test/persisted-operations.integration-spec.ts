@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+
+import type { INestApplication } from '@nestjs/common';
 import {
   Controller,
   HttpCode,
@@ -8,11 +10,11 @@ import {
   Post,
   RequestMethod,
 } from '@nestjs/common';
-import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { stripIgnoredCharacters } from 'graphql';
 import request from 'supertest';
+
 import type { Environment } from '../src/config/environment.js';
 import { PersistedOperationsMiddleware } from '../src/graphql/persisted-operations.middleware.js';
 

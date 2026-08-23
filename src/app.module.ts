@@ -1,3 +1,4 @@
+import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import {
   MiddlewareConsumer,
   Module,
@@ -6,13 +7,13 @@ import {
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { LoggerModule } from 'nestjs-pino';
 import type { Request, Response } from 'express';
-import { validateEnvironment } from './config/environment.js';
+import { LoggerModule } from 'nestjs-pino';
+
 import type { Environment } from './config/environment.js';
+import { validateEnvironment } from './config/environment.js';
 import { DatabaseModule } from './database/database.module.js';
 import { formatGraphqlError } from './graphql/error-formatter.js';
 import { PersistedOperationsMiddleware } from './graphql/persisted-operations.middleware.js';
@@ -33,8 +34,8 @@ import { ConversationModule } from './modules/conversations/conversation.module.
 import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { ProfileModule } from './modules/profile/profile.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
-import { RedisModule, REDIS } from './redis/redis.module.js';
 import type { RedisClient } from './redis/redis.module.js';
+import { REDIS, RedisModule } from './redis/redis.module.js';
 import { RedisThrottlerStorage } from './redis/redis-throttler.storage.js';
 import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
 

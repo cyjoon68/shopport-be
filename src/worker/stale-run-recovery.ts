@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+
 import { AiRepository } from '../modules/ai/ai.repository.js';
 
 @Injectable()

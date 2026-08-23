@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
-import { AiTools } from './ai-tools.js';
+
 import type { CatalogProduct, CatalogSearchResult } from '../catalog/types.js';
+import { AiTools } from './ai-tools.js';
 
 const product = (
   id: string,

@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+
 import { validate as validateUuid } from 'uuid';
 
 const refreshSecretPattern = /^[A-Za-z\d_-]{43}$/u;

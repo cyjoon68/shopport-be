@@ -1,8 +1,9 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { JWTPayload } from 'jose';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { JOSEError } from 'jose/errors';
-import type { JWTPayload } from 'jose';
+
 import type { Environment } from '../../config/environment.js';
 import type { AuthProvider, VerifiedIdentity } from './auth.types.js';
 

@@ -1,6 +1,7 @@
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
+
 import { validateEnvironment } from '../src/config/environment.js';
 
 const run = async (): Promise<void> => {

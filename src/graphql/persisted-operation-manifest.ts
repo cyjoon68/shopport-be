@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+
 import { stripIgnoredCharacters } from 'graphql';
 
 const hashPattern = /^[a-f\d]{64}$/u;

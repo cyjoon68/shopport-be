@@ -5,10 +5,11 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Pool } from 'pg';
+
 import { Public } from '../common/public.decorator.js';
 import { DATABASE_POOL } from '../database/database.module.js';
-import { REDIS } from '../redis/redis.module.js';
 import type { RedisClient } from '../redis/redis.module.js';
+import { REDIS } from '../redis/redis.module.js';
 
 type Health = Readonly<{ status: 'ok' }>;
 

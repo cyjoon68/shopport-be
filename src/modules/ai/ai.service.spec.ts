@@ -1,8 +1,10 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { StreamChunk } from '@tanstack/ai';
 import { v7 as uuidv7 } from 'uuid';
+
 import type { AssetsService } from '../assets/assets.service.js';
 import type { AiRepository } from './ai.repository.js';
+import { AiService } from './ai.service.js';
 import type { AiProviderId } from './ai-request.js';
 import type {
   AiHistoryMessage,
@@ -10,7 +12,6 @@ import type {
   AiStreamInput,
   AiStreamLifecycle,
 } from './ai-stream.adapter.js';
-import { AiService } from './ai.service.js';
 import type { AiToolSession } from './ai-tools.js';
 import type { AiTools } from './ai-tools.js';
 import type { RedisRunCancellation } from './redis-run-cancellation.js';

@@ -1,13 +1,14 @@
 import { ConfigService } from '@nestjs/config';
-import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
+import { Test } from '@nestjs/testing';
+
 import type { Environment } from '../../config/environment.js';
+import { aiStreamAdapterProvider } from './ai.module.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import {
   AI_PROVIDER_FETCH,
   OpenAiCompatibleAiStreamAdapter,
 } from './openai-compatible-ai.adapter.js';
-import { aiStreamAdapterProvider } from './ai.module.js';
 
 const compileAdapter = (): Promise<TestingModule> =>
   Test.createTestingModule({

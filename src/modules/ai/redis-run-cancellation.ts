@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { REDIS } from '../../redis/redis.module.js';
+
 import type { RedisClient } from '../../redis/redis.module.js';
+import { REDIS } from '../../redis/redis.module.js';
 
 const cancellationChannel = 'shopport:ai:cancel';
 const cancellationTtlSeconds = 60 * 60;

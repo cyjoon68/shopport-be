@@ -1,7 +1,8 @@
 import { jest } from '@jest/globals';
-import { ProfileResolver } from './profile.resolver.js';
-import type { ProfileRepository, ViewerRecord } from './profile.repository.js';
+
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
+import type { ProfileRepository, ViewerRecord } from './profile.repository.js';
+import { ProfileResolver } from './profile.resolver.js';
 
 const accountId = '0198a122-0c00-7000-8000-000000000001';
 const request = {

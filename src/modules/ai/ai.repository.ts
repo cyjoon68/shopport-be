@@ -6,8 +6,9 @@ import {
 } from '@nestjs/common';
 import { and, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
-import { DATABASE } from '../../database/database.module.js';
+
 import type { Database } from '../../database/database.module.js';
+import { DATABASE } from '../../database/database.module.js';
 import {
   accounts,
   aiRuns,
@@ -22,8 +23,8 @@ import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { DEFAULT_CONVERSATION_TITLE } from '../conversations/conversation.types.js';
 import { AiAccessError } from './ai.errors.js';
-import { providerIdsSchema } from './ai-request.js';
 import type { AiProviderId } from './ai-request.js';
+import { providerIdsSchema } from './ai-request.js';
 import type {
   AiHistoryMessage,
   AiProductRecommendation,

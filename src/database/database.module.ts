@@ -1,10 +1,11 @@
 import { Global, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { drizzle } from 'drizzle-orm/node-postgres';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import * as schema from './schema.js';
+
 import type { Environment } from '../config/environment.js';
+import * as schema from './schema.js';
 
 export const DATABASE = Symbol('DATABASE');
 export const DATABASE_POOL = Symbol('DATABASE_POOL');

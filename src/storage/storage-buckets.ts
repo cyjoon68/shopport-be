@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+
 import type { Environment } from '../config/environment.js';
 
 export type StorageBucket = 'raw' | 'normalized' | 'archive';

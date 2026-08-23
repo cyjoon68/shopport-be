@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { asc, eq, inArray, lt } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
-import { DATABASE } from '../../database/database.module.js';
+
 import type { Database } from '../../database/database.module.js';
+import { DATABASE } from '../../database/database.module.js';
 import {
   archiveManifests,
   conversations,
@@ -10,8 +11,8 @@ import {
   messages,
 } from '../../database/schema.js';
 import { ObjectStore } from '../../storage/object-store.js';
-import { decodeArchive, encodeArchive } from './archive-format.js';
 import type { ArchiveRecord } from './archive-format.js';
+import { decodeArchive, encodeArchive } from './archive-format.js';
 
 type PendingMessage = Readonly<{
   id: string;

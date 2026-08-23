@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
-import { DATABASE } from '../../database/database.module.js';
+
 import type { Database } from '../../database/database.module.js';
+import { DATABASE } from '../../database/database.module.js';
 import {
   accounts,
   authSessions,

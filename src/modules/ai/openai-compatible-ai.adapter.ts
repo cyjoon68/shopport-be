@@ -1,14 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  EventType,
-  RUN_CANCEL_REASON,
-  chat,
-  maxIterations,
-  toolDefinition,
-} from '@tanstack/ai';
 import type {
   AnyServerTool,
   ChatMiddleware,
@@ -17,28 +11,36 @@ import type {
   ModelMessage,
   StreamChunk,
 } from '@tanstack/ai';
+import {
+  chat,
+  EventType,
+  maxIterations,
+  RUN_CANCEL_REASON,
+  toolDefinition,
+} from '@tanstack/ai';
 import { openaiCompatibleText } from '@tanstack/ai-openai/compatible';
 import { v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
+
 import type { Environment } from '../../config/environment.js';
-import { toAiProductResult } from './ai-tool-result.js';
+import type { AiProviderId } from './ai-request.js';
 import type {
+  AiProductRecommendation,
   AiStreamAdapter,
   AiStreamInput,
   AiStreamLifecycle,
-  AiProductRecommendation,
   AiStreamResult,
   AskUser,
 } from './ai-stream.adapter.js';
-import type { AiProviderId } from './ai-request.js';
 import { clarificationDimensions } from './ai-stream.adapter.js';
+import { toAiProductResult } from './ai-tool-result.js';
 import type { AiToolSession } from './ai-tools.js';
+import type { ShoppingDeepModeAssessment } from './shopping-deep-mode.js';
 import {
   evaluateShoppingDeepMode,
   shoppingAmbiguityThreshold,
   shoppingRequestKinds,
 } from './shopping-deep-mode.js';
-import type { ShoppingDeepModeAssessment } from './shopping-deep-mode.js';
 
 export const AI_PROVIDER_FETCH = Symbol('AI_PROVIDER_FETCH');
 

@@ -8,10 +8,11 @@ import {
   Resolver,
 } from '@nestjs/graphql';
 import { z } from 'zod';
-import { viewerIdFrom, type AuthenticatedRequest } from '../auth/auth.guard.js';
-import { CatalogService } from '../catalog/catalog.service.js';
-import { productCursor, toProductGraphql } from '../catalog/catalog.mapper.js';
+
+import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import type { ProductGraphql } from '../catalog/catalog.mapper.js';
+import { productCursor, toProductGraphql } from '../catalog/catalog.mapper.js';
+import { CatalogService } from '../catalog/catalog.service.js';
 import { FavoritesRepository } from './favorites.repository.js';
 
 const inputSchema = z.object({ productId: z.uuid() });

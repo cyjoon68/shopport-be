@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+
 import { normalizeImage } from './normalize-image.js';
 
 describe('image normalization', () => {

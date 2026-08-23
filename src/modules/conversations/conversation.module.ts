@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
-import { CatalogModule } from '../catalog/catalog.module.js';
+
 import { ArchiveModule } from '../archive/archive.module.js';
+import { CatalogModule } from '../catalog/catalog.module.js';
 import { ConversationRepository } from './conversation.repository.js';
 import { ConversationResolver } from './conversation.resolver.js';
 import { ConversationService } from './conversation.service.js';

@@ -1,7 +1,8 @@
-import { ConfigService } from '@nestjs/config';
 import { jest } from '@jest/globals';
-import { EventType } from '@tanstack/ai';
+import { ConfigService } from '@nestjs/config';
 import type { StreamChunk } from '@tanstack/ai';
+import { EventType } from '@tanstack/ai';
+
 import type { Environment } from '../../config/environment.js';
 import type { CatalogProduct } from '../catalog/types.js';
 import type { AiStreamResult } from './ai-stream.adapter.js';
