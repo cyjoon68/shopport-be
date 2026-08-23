@@ -3,6 +3,16 @@ import { z } from 'zod';
 
 const runIdNamespace = '00000000-0000-4000-8000-000000000001';
 
+export const providerIdsSchema = z
+  .array(z.enum(['daiso', 'oliveyoung']))
+  .max(2)
+  .refine(
+    (value) => new Set(value).size === value.length,
+    'Provider IDs must be unique',
+  );
+
+export type AiProviderId = z.infer<typeof providerIdsSchema>[number];
+
 export const runIdSchema = z
   .string()
   .min(1)
@@ -32,6 +42,8 @@ export type AiRequest = Readonly<{
   userMessageId: string;
   text: string;
   assetId: string | null;
+  providerIds: ReadonlyArray<AiProviderId>;
+  providerIdsSpecified: boolean;
 }>;
 
 export class AiRequestValidationError extends Error {}
@@ -64,6 +76,11 @@ export const parseAiRequest = (body: unknown): AiRequest => {
     assetIdValue === undefined || assetIdValue === null
       ? null
       : z.uuid().parse(assetIdValue);
+  const providerIdsValue = parsed.forwardedProps.providerIds;
+  const providerIds =
+    providerIdsValue === undefined
+      ? []
+      : providerIdsSchema.parse(providerIdsValue);
   const text = textFromContent(userMessage.content);
   if (text.length > 2_000) {
     throw new AiRequestValidationError('User message exceeds 2000 chars');
@@ -75,6 +92,8 @@ export const parseAiRequest = (body: unknown): AiRequest => {
     userMessageId,
     text,
     assetId,
+    providerIds,
+    providerIdsSpecified: providerIdsValue !== undefined,
   };
   if (request.text.length === 0 && request.assetId === null) {
     throw new AiRequestValidationError('AI turn requires text or one image');

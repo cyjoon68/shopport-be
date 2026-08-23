@@ -1,4 +1,5 @@
 import type { StreamChunk } from '@tanstack/ai';
+import type { AiProviderId } from './ai-request.js';
 import type { AiToolSession } from './ai-tools.js';
 
 export const AI_STREAM_ADAPTER = Symbol('AI_STREAM_ADAPTER');
@@ -27,6 +28,7 @@ export type AiStreamInput = Readonly<{
   threadId: string;
   runId: string;
   text: string;
+  providerIds?: ReadonlyArray<AiProviderId>;
   history?: ReadonlyArray<AiHistoryMessage>;
   image: Readonly<{ base64: string; mimeType: string }> | null;
 }>;

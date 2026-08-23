@@ -29,6 +29,42 @@ describe('parseAiRequest', () => {
     expect(request.userMessageId).toBe(userMessageId);
   });
 
+  it('accepts at most two unique provider filters', () => {
+    const request = parseAiRequest({
+      ...requestFor([{ id: uuidv7(), role: 'user', content: '립밤 찾아줘' }]),
+      forwardedProps: { providerIds: ['oliveyoung', 'daiso'] },
+    });
+
+    expect(request.providerIds).toEqual(['oliveyoung', 'daiso']);
+    expect(request.providerIdsSpecified).toBe(true);
+    expect(() =>
+      parseAiRequest({
+        ...requestFor([{ id: uuidv7(), role: 'user', content: '립밤 찾아줘' }]),
+        forwardedProps: { providerIds: ['daiso', 'daiso'] },
+      }),
+    ).toThrow('Provider IDs must be unique');
+    expect(() =>
+      parseAiRequest({
+        ...requestFor([{ id: uuidv7(), role: 'user', content: '립밤 찾아줘' }]),
+        forwardedProps: { providerIds: ['daiso', 'oliveyoung', 'daiso'] },
+      }),
+    ).toThrow();
+  });
+
+  it('distinguishes an explicit empty filter from an omitted filter', () => {
+    const message = [{ id: uuidv7(), role: 'user', content: '립밤 찾아줘' }];
+
+    expect(parseAiRequest(requestFor(message)).providerIdsSpecified).toBe(
+      false,
+    );
+    expect(
+      parseAiRequest({
+        ...requestFor(message),
+        forwardedProps: { providerIds: [] },
+      }),
+    ).toMatchObject({ providerIds: [], providerIdsSpecified: true });
+  });
+
   it('rejects invalid message roles and IDs', () => {
     expect(() =>
       parseAiRequest(
