@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  bigserial,
   boolean,
   check,
   index,
@@ -88,6 +89,7 @@ export const aiRuns = pgTable(
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
     heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    streamClosedAt: timestamp('stream_closed_at', { withTimezone: true }),
   },
   (table) => [
     check(
@@ -97,6 +99,45 @@ export const aiRuns = pgTable(
     index('ai_runs_stale_reserved_idx')
       .on(table.deadlineAt, table.heartbeatAt)
       .where(sql`${table.status} = 'reserved'`),
+  ],
+);
+
+export const aiRunEvents = pgTable(
+  'ai_run_events',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: 'cascade' }),
+    chunk: jsonb('chunk').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true })
+      .notNull()
+      .default(sql`now() + interval '1 hour'`),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('ai_run_events_run_id_id_idx').on(table.runId, table.id),
+    index('ai_run_events_expires_at_idx').on(table.expiresAt),
+  ],
+);
+
+export const rateLimits = pgTable(
+  'rate_limits',
+  {
+    key: text('key').primaryKey(),
+    hits: integer('hits').notNull(),
+    windowExpiresAt: timestamp('window_expires_at', {
+      withTimezone: true,
+    }).notNull(),
+    blockedUntil: timestamp('blocked_until', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('rate_limits_window_expires_at_idx').on(table.windowExpiresAt),
   ],
 );
 

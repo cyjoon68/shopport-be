@@ -13,10 +13,10 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { resumeHttpResponse, toHttpResponse } from '@tanstack/ai';
 import type { Response as ExpressResponse } from 'express';
+import type { Pool } from 'pg';
 import { z } from 'zod';
 
-import type { RedisClient } from '../../redis/redis.module.js';
-import { REDIS } from '../../redis/redis.module.js';
+import { DATABASE_POOL } from '../../database/database.module.js';
 import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import { AiService } from './ai.service.js';
 import {
@@ -25,7 +25,7 @@ import {
   runIdSchema,
   storageRunIdFor,
 } from './ai-request.js';
-import { RedisStreamDurability } from './redis-stream-durability.js';
+import { PostgresStreamDurability } from './postgres-stream-durability.js';
 
 const resumeQuerySchema = z.object({
   runId: runIdSchema,
@@ -55,7 +55,7 @@ const pipeResponse = async (
 export class AiController {
   public constructor(
     private readonly ai: AiService,
-    @Inject(REDIS) private readonly redis: RedisClient,
+    @Inject(DATABASE_POOL) private readonly pool: Pool,
   ) {}
 
   @Post()
@@ -75,8 +75,8 @@ export class AiController {
           reference.threadId,
         );
       }
-      const durability = new RedisStreamDurability(
-        this.redis,
+      const durability = new PostgresStreamDurability(
+        this.pool,
         reference.storageRunId,
         offset,
       );
@@ -110,8 +110,8 @@ export class AiController {
       throw new BadRequestException('Invalid replay request');
     const storageRunId = storageRunIdFor(parsed.data.runId);
     await this.ai.assertOwnedRun(viewerIdFrom(request), storageRunId);
-    const durability = new RedisStreamDurability(
-      this.redis,
+    const durability = new PostgresStreamDurability(
+      this.pool,
       storageRunId,
       request.header('last-event-id') ?? parsed.data.offset,
     );

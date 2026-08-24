@@ -6,15 +6,12 @@ import type { Database } from '../database/database.module.js';
 import { DATABASE } from '../database/database.module.js';
 import {
   accounts,
-  aiRuns,
   assets,
   conversations,
   messageParts,
   messages,
   outbox,
 } from '../database/schema.js';
-import type { RedisClient } from '../redis/redis.module.js';
-import { REDIS } from '../redis/redis.module.js';
 import { ObjectStore } from '../storage/object-store.js';
 
 const accountPayload = z.object({ accountId: z.uuid() });
@@ -35,7 +32,6 @@ type OutboxRecord = Readonly<{
 export class OutboxProcessor {
   public constructor(
     @Inject(DATABASE) private readonly database: Database,
-    @Inject(REDIS) private readonly redis: RedisClient,
     private readonly objects: ObjectStore,
   ) {}
 
@@ -110,7 +106,7 @@ export class OutboxProcessor {
   private readonly purgeConversation = async (
     payload: z.infer<typeof conversationPayload>,
   ): Promise<void> => {
-    const [assetRows, runRows, messageRows] = await Promise.all([
+    const [assetRows, messageRows] = await Promise.all([
       this.database
         .select({
           originalKey: assets.originalKey,
@@ -118,10 +114,6 @@ export class OutboxProcessor {
         })
         .from(assets)
         .where(eq(assets.conversationId, payload.conversationId)),
-      this.database
-        .select({ id: aiRuns.id })
-        .from(aiRuns)
-        .where(eq(aiRuns.conversationId, payload.conversationId)),
       this.database
         .select({ id: messages.id })
         .from(messages)
@@ -139,7 +131,6 @@ export class OutboxProcessor {
       'archive',
       `archives/${payload.accountId}/${payload.conversationId}/`,
     );
-    await this.deleteRunStreams(runRows.map(({ id }) => id));
     await this.database.transaction(async (transaction) => {
       const ids = messageRows.map(({ id }) => id);
       if (ids.length > 0)
@@ -153,22 +144,15 @@ export class OutboxProcessor {
   };
 
   private readonly purgeAccount = async (accountId: string): Promise<void> => {
-    const [runRows, messageRows] = await Promise.all([
-      this.database
-        .select({ id: aiRuns.id })
-        .from(aiRuns)
-        .where(eq(aiRuns.accountId, accountId)),
-      this.database
-        .select({ id: messages.id })
-        .from(messages)
-        .innerJoin(conversations, eq(messages.conversationId, conversations.id))
-        .where(eq(conversations.accountId, accountId)),
-    ]);
+    const messageRows = await this.database
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+      .where(eq(conversations.accountId, accountId));
     await Promise.all([
       this.objects.deletePrefix('raw', `uploads/${accountId}/`),
       this.objects.deletePrefix('normalized', `uploads/${accountId}/`),
       this.objects.deletePrefix('archive', `archives/${accountId}/`),
-      this.deleteRunStreams(runRows.map(({ id }) => id)),
     ]);
     await this.database.transaction(async (transaction) => {
       const ids = messageRows.map(({ id }) => id);
@@ -178,15 +162,5 @@ export class OutboxProcessor {
           .where(inArray(messageParts.messageId, ids));
       await transaction.delete(accounts).where(eq(accounts.id, accountId));
     });
-  };
-
-  private readonly deleteRunStreams = async (
-    runIds: ReadonlyArray<string>,
-  ): Promise<void> => {
-    const keys = runIds.flatMap((runId) => [
-      `shopport:ai:run:${runId}`,
-      `shopport:ai:run:${runId}:complete`,
-    ]);
-    if (keys.length > 0) await this.redis.del(keys);
   };
 }

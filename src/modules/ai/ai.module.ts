@@ -11,7 +11,6 @@ import {
   AI_PROVIDER_FETCH,
   OpenAiCompatibleAiStreamAdapter,
 } from './openai-compatible-ai.adapter.js';
-import { RedisRunCancellation } from './redis-run-cancellation.js';
 
 export const aiStreamAdapterProvider = {
   provide: AI_STREAM_ADAPTER,
@@ -25,7 +24,6 @@ export const aiStreamAdapterProvider = {
     AiRepository,
     AiService,
     AiTools,
-    RedisRunCancellation,
     OpenAiCompatibleAiStreamAdapter,
     { provide: AI_PROVIDER_FETCH, useValue: globalThis.fetch },
     aiStreamAdapterProvider,

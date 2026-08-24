@@ -520,9 +520,9 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
     config: ConfigService<Environment, true>,
     @Inject(AI_PROVIDER_FETCH) private readonly providerFetch: typeof fetch,
   ) {
-    this.#apiKey = config.get('COMMAND_CODE_API_KEY', { infer: true });
-    this.#model = config.get('COMMAND_CODE_MODEL', { infer: true });
-    this.#maxOutputTokens = config.get('COMMAND_CODE_MAX_OUTPUT_TOKENS', {
+    this.#apiKey = config.get('PROVIDER_API_KEY', { infer: true });
+    this.#model = config.get('PROVIDER_MODEL', { infer: true });
+    this.#maxOutputTokens = config.get('PROVIDER_MAX_OUTPUT_TOKENS', {
       infer: true,
     });
   }
@@ -556,7 +556,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
     let askUser: AskUser | null = null;
     const abortController = new AbortController();
     const assistantMessageId = uuidv7();
-    const commandCodeTools = this.createTools(
+    const providerTools = this.createTools(
       tools,
       recommendationState,
       deepModeState,
@@ -575,7 +575,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       systemPrompts: providerPrompt
         ? [systemPrompt, providerPrompt]
         : [systemPrompt],
-      tools: commandCodeTools,
+      tools: providerTools,
       modelOptions: {
         max_completion_tokens: this.#maxOutputTokens,
       },
@@ -608,7 +608,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
   private readonly createTextAdapter = (): ReturnType<
     typeof openaiCompatibleText
   > => {
-    if (!this.#apiKey) throw new Error('COMMAND_CODE_API_KEY is required');
+    if (!this.#apiKey) throw new Error('PROVIDER_API_KEY is required');
     return openaiCompatibleText(this.#model, {
       name: 'commandcode',
       apiKey: this.#apiKey,

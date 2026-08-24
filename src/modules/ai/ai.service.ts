@@ -7,7 +7,6 @@ import { parseAiRequest, storageRunIdFor } from './ai-request.js';
 import type { AiStreamAdapter } from './ai-stream.adapter.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
 import { AiTools } from './ai-tools.js';
-import { RedisRunCancellation } from './redis-run-cancellation.js';
 
 const fallbackConversationTitle = (prompt: string): string =>
   Array.from(prompt.replace(/\s+/gu, ' ').trim()).slice(0, 24).join('');
@@ -18,7 +17,6 @@ export class AiService {
     private readonly repository: AiRepository,
     private readonly tools: AiTools,
     private readonly assets: AssetsService,
-    private readonly cancellation: RedisRunCancellation,
     @Inject(AI_STREAM_ADAPTER) private readonly stream: AiStreamAdapter,
   ) {}
 
@@ -92,7 +90,7 @@ export class AiService {
           },
           onFailure: () => this.repository.failRun(request.storageRunId),
           isCancelled: () =>
-            this.cancellation.isCancelled(request.storageRunId),
+            this.repository.isRunCancelled(request.storageRunId),
         },
       );
     } catch (error) {
@@ -118,11 +116,6 @@ export class AiService {
     runId: string,
   ): Promise<void> => {
     const storageRunId = storageRunIdFor(runId);
-    const result = await this.repository.cancelRun(
-      accountId,
-      conversationId,
-      storageRunId,
-    );
-    if (result !== 'terminal') await this.cancellation.mark(storageRunId);
+    await this.repository.cancelRun(accountId, conversationId, storageRunId);
   };
 }

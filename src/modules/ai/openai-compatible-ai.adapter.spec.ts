@@ -154,9 +154,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     );
     const adapter = new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     );
@@ -242,9 +242,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     const chunks: Array<StreamChunk> = [];
     for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     ).createStream(
@@ -336,9 +336,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
 
     for await (const _chunk of new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     ).createStream(
@@ -404,9 +404,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
 
     for await (const _chunk of new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     ).createStream(
@@ -488,9 +488,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
 
     for await (const _chunk of new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     ).createStream(
@@ -575,9 +575,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
 
     for await (const _chunk of new OpenAiCompatibleAiStreamAdapter(
       new ConfigService<Environment, true>({
-        COMMAND_CODE_API_KEY: 'key',
-        COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-        COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+        PROVIDER_API_KEY: 'key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
       }),
       providerFetch,
     ).createStream(
@@ -629,9 +629,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         ]),
       );
     const config = new ConfigService<Environment, true>({
-      COMMAND_CODE_API_KEY: 'key',
-      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      PROVIDER_API_KEY: 'key',
+      PROVIDER_MODEL: 'gpt-5.4-mini',
+      PROVIDER_MAX_OUTPUT_TOKENS: 512,
     });
     const tools: AiToolSession = {
       searchProducts: () =>
@@ -752,9 +752,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         ]),
       );
     const config = new ConfigService<Environment, true>({
-      COMMAND_CODE_API_KEY: 'test-command-code-key',
-      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      PROVIDER_API_KEY: 'test-provider-key',
+      PROVIDER_MODEL: 'gpt-5.4-mini',
+      PROVIDER_MAX_OUTPUT_TOKENS: 512,
     });
     const searchProducts = jest.fn(() =>
       Promise.resolve({
@@ -798,7 +798,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
       'https://api.commandcode.ai/provider/v1/chat/completions',
     );
     expect(requestHeaders(firstCall).get('authorization')).toBe(
-      'Bearer test-command-code-key',
+      'Bearer test-provider-key',
     );
     expect(requestHeaders(firstCall).get('x-cmd-zdr')).toBe('1');
     const firstBody = await requestBody(firstCall);
@@ -953,9 +953,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         ]),
       );
     const config = new ConfigService<Environment, true>({
-      COMMAND_CODE_API_KEY: 'test-command-code-key',
-      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      PROVIDER_API_KEY: 'test-provider-key',
+      PROVIDER_MODEL: 'gpt-5.4-mini',
+      PROVIDER_MAX_OUTPUT_TOKENS: 512,
     });
     const completed: Array<AiStreamResult> = [];
 
@@ -1092,9 +1092,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         ]),
       );
     const config = new ConfigService<Environment, true>({
-      COMMAND_CODE_API_KEY: 'test-command-code-key',
-      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      PROVIDER_API_KEY: 'test-provider-key',
+      PROVIDER_MODEL: 'gpt-5.4-mini',
+      PROVIDER_MAX_OUTPUT_TOKENS: 512,
     });
     const completed: Array<AiStreamResult> = [];
     const onFailure = jest.fn(() => Promise.resolve());
@@ -1163,9 +1163,9 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
       ),
     );
     const config = new ConfigService<Environment, true>({
-      COMMAND_CODE_API_KEY: 'test-command-code-key',
-      COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-      COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+      PROVIDER_API_KEY: 'test-provider-key',
+      PROVIDER_MODEL: 'gpt-5.4-mini',
+      PROVIDER_MAX_OUTPUT_TOKENS: 512,
     });
     const tools: AiToolSession = {
       searchProducts: () =>

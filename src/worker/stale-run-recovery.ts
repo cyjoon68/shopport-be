@@ -6,6 +6,11 @@ import { AiRepository } from '../modules/ai/ai.repository.js';
 export class StaleRunRecovery {
   public constructor(private readonly repository: AiRepository) {}
 
-  public recover = (): Promise<number> =>
-    this.repository.recoverStaleReservedRuns();
+  public recover = async (): Promise<number> => {
+    const [recovered] = await Promise.all([
+      this.repository.recoverStaleReservedRuns(),
+      this.repository.cleanupRuntimeState(),
+    ]);
+    return recovered;
+  };
 }

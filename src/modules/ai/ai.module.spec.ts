@@ -19,9 +19,9 @@ const compileAdapter = (): Promise<TestingModule> =>
       {
         provide: ConfigService,
         useValue: new ConfigService<Environment, true>({
-          COMMAND_CODE_API_KEY: 'test-command-code-key',
-          COMMAND_CODE_MODEL: 'gpt-5.4-mini',
-          COMMAND_CODE_MAX_OUTPUT_TOKENS: 512,
+          PROVIDER_API_KEY: 'test-provider-key',
+          PROVIDER_MODEL: 'gpt-5.4-mini',
+          PROVIDER_MAX_OUTPUT_TOKENS: 512,
         }),
       },
     ],
