@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
+import { EventType, type StreamChunk } from '@tanstack/ai';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -12,6 +13,13 @@ import { GenericContainer } from 'testcontainers';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
+import type {
+  AiStreamAdapter,
+  AiStreamInput,
+  AiStreamLifecycle,
+} from '../src/modules/ai/ai-stream.adapter.js';
+import { AI_STREAM_ADAPTER } from '../src/modules/ai/ai-stream.adapter.js';
+import type { AiToolSession } from '../src/modules/ai/ai-tools.js';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import type {
@@ -19,6 +27,11 @@ import type {
   VerifiedIdentity,
 } from '../src/modules/auth/auth.types.js';
 import { ProviderTokenVerifier } from '../src/modules/auth/provider-token-verifier.js';
+import { CATALOG_PROVIDER } from '../src/modules/catalog/catalog.tokens.js';
+import type {
+  CatalogProduct,
+  CatalogProvider,
+} from '../src/modules/catalog/types.js';
 import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';
@@ -50,6 +63,87 @@ const objectStore = {
     objectDeletePrefixCalls.push([bucket, prefix]);
     return Promise.resolve();
   },
+};
+
+const integrationProduct: CatalogProduct = {
+  id: '0198a122-0c00-7000-8000-000000000099',
+  providerId: 'daiso',
+  productCode: 'integration-tumbler',
+  title: '통합 테스트 텀블러',
+  imageUrl: 'https://images.example.com/tumbler.jpg',
+  affiliate: false,
+  relevanceBucket: 2,
+  inStock: true,
+  totalAmountMinor: '5000',
+  deliveryEstimateDays: 1,
+  ratingConfidence: 1,
+  freshnessEpochMs: Date.UTC(2026, 7, 24),
+  outboundUrl: 'https://www.daisomall.co.kr/ds/prd/detail?pdNo=integration',
+  store: null,
+  inventory: null,
+  evidence: [{ operation: 'products', fetchedAt: Date.UTC(2026, 7, 24) }],
+};
+
+const integrationCatalogProvider: CatalogProvider = {
+  providerId: 'integration',
+  capabilities: ['LIVE_QUERY'],
+  outboundHosts: ['www.daisomall.co.kr'],
+  search: () =>
+    Promise.resolve({
+      items: [integrationProduct],
+      endCursor: null,
+      hasNextPage: false,
+    }),
+  getProduct: (id) =>
+    Promise.resolve(id === integrationProduct.id ? integrationProduct : null),
+};
+
+const createIntegrationStream = async function* (
+  input: AiStreamInput,
+  tools: AiToolSession,
+  lifecycle: AiStreamLifecycle,
+): AsyncGenerator<StreamChunk> {
+  const search = await tools.searchProducts({
+    query: input.text,
+    providerId: 'daiso',
+  });
+  const messageId = uuidv7();
+  const text = '조건에 맞는 상품을 찾았어요.';
+  yield {
+    type: EventType.RUN_STARTED,
+    threadId: input.threadId,
+    runId: input.runId,
+  };
+  yield {
+    type: EventType.TOOL_CALL_RESULT,
+    messageId,
+    toolCallId: 'integration-search',
+    content: JSON.stringify({ rankingPolicy: 'neutral-v1' }),
+  };
+  yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' };
+  yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: text };
+  yield { type: EventType.TEXT_MESSAGE_END, messageId };
+  await lifecycle.onComplete({
+    messageId,
+    text,
+    productRecommendations: search.items.slice(0, 1).map(({ id }) => ({
+      productId: id,
+      aiSummary: '통합 테스트 추천 상품',
+    })),
+    askUser: null,
+  });
+  yield {
+    type: EventType.RUN_FINISHED,
+    threadId: input.threadId,
+    runId: input.runId,
+    outcome: { type: 'success' },
+  };
+};
+
+const integrationAiStream: AiStreamAdapter = {
+  requiresImageData: false,
+  generateTitle: () => Promise.resolve('통합 테스트 대화'),
+  createStream: createIntegrationStream,
 };
 
 const loginSchema = z.object({
@@ -113,13 +207,11 @@ const parseStreamChunks = (
     .split('\n')
     .map((line) => streamChunkSchema.parse(JSON.parse(line)));
 
-const runIntegration = process.env.COMMAND_CODE_API_KEY
-  ? describe
-  : describe.skip;
 const integrationIdentityToken = 'integration-kakao-token';
 const integrationSubject = 'integration-kakao';
+const secondIntegrationSubject = 'integration-kakao-second';
 
-runIntegration('Shopport API vertical flow', () => {
+describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
   let redis: StartedTestContainer;
@@ -156,6 +248,7 @@ runIntegration('Shopport API vertical flow', () => {
     process.env.DATABASE_URL = postgres.getConnectionUri();
     process.env.REDIS_URL = `redis://${redis.getHost()}:${String(redis.getMappedPort(6379))}`;
     process.env.JWT_SECRET = 'integration-test-secret-at-least-32-bytes';
+    process.env.COMMAND_CODE_API_KEY = 'integration-command-code-key';
     process.env.PERSISTED_OPERATION_MANIFEST = '';
     process.env.AWS_ENDPOINT_URL = 'http://localhost:4566';
     process.env.RAW_ASSET_BUCKET = 'integration-raw';
@@ -183,14 +276,25 @@ runIntegration('Shopport API vertical flow', () => {
     })
       .overrideProvider(ProviderTokenVerifier)
       .useValue({
-        verify: (provider: AuthProvider): Promise<VerifiedIdentity> =>
+        verify: (
+          provider: AuthProvider,
+          _idToken: string,
+          nonce: string,
+        ): Promise<VerifiedIdentity> =>
           Promise.resolve({
             provider,
-            subject: integrationSubject,
+            subject:
+              nonce === 'second-account'
+                ? secondIntegrationSubject
+                : integrationSubject,
             displayName: '통합 테스트 사용자',
             profileImageUrl: null,
           }),
       })
+      .overrideProvider(CATALOG_PROVIDER)
+      .useValue(integrationCatalogProvider)
+      .overrideProvider(AI_STREAM_ADAPTER)
+      .useValue(integrationAiStream)
       .compile();
     app = module.createNestApplication();
     appInitialized = true;
@@ -424,32 +528,16 @@ runIntegration('Shopport API vertical flow', () => {
     );
     const accountId = account.rows.at(0)?.account_id;
     if (!accountId) throw new Error('Expected Kakao account');
-    const usage = await pool.query<{ usage_date: string; text_count: number }>(
-      `select usage_date::text, text_count
-       from daily_usage
-       where account_id = $1`,
-      [accountId],
-    );
-    const before = usage.rows.at(0);
-    if (!before) throw new Error('Expected daily usage');
     const reservedRunId = uuidv7();
     const now = new Date();
     await pool.query(
-      `update daily_usage
-       set text_count = text_count + 1
-       where account_id = $1 and usage_date = $2`,
-      [accountId, before.usage_date],
-    );
-    await pool.query(
       `insert into ai_runs
-       (id, account_id, conversation_id, usage_date, usage_kind, status,
-        started_at, deadline_at, heartbeat_at)
-       values ($1, $2, $3, $4, 'text', 'reserved', $5, $6, $5)`,
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $4)`,
       [
         reservedRunId,
         accountId,
         conversationId,
-        before.usage_date,
         now,
         new Date(now.getTime() + 60_000),
       ],
@@ -464,23 +552,19 @@ runIntegration('Shopport API vertical flow', () => {
     }
     const cancelled = await pool.query<{
       status: string;
-      text_count: number;
       assistant_count: number;
     }>(
-      `select r.status, u.text_count,
+      `select r.status,
               count(m.id) filter (where m.role = 'assistant')::int as assistant_count
        from ai_runs r
-       join daily_usage u
-         on u.account_id = r.account_id and u.usage_date = r.usage_date
        left join messages m on m.run_id = r.id
        where r.id = $1
-       group by r.status, u.text_count`,
+       group by r.status`,
       [reservedRunId],
     );
 
     expect(cancelled.rows.at(0)).toEqual({
       status: 'cancelled',
-      text_count: before.text_count,
       assistant_count: 0,
     });
 
@@ -511,12 +595,12 @@ runIntegration('Shopport API vertical flow', () => {
        join auth_sessions child on child.id = parent.replaced_by_session_id
        join auth_identities identity on identity.account_id = parent.account_id
        where identity.provider = 'kakao'
-         and identity.provider_subject = '${integrationSubject}'`,
+         and identity.provider_subject = '${secondIntegrationSubject}'`,
     );
     expect(successors.rows.at(0)?.count).toBe('1');
   }, 30_000);
 
-  it('recovers only stale reserved runs and refunds quota once', async () => {
+  it('recovers only stale reserved runs once', async () => {
     const account = await pool.query<{ account_id: string }>(
       `select account_id
        from auth_identities
@@ -524,14 +608,6 @@ runIntegration('Shopport API vertical flow', () => {
     );
     const accountId = account.rows.at(0)?.account_id;
     if (!accountId) throw new Error('Expected Kakao account');
-    const usage = await pool.query<{ usage_date: string; text_count: number }>(
-      `select usage_date::text, text_count
-       from daily_usage
-       where account_id = $1`,
-      [accountId],
-    );
-    const before = usage.rows.at(0);
-    if (!before) throw new Error('Expected daily usage');
     const now = new Date();
     const overdue = new Date(now.getTime() - 180_000);
     const future = new Date(now.getTime() + 180_000);
@@ -541,20 +617,14 @@ runIntegration('Shopport API vertical flow', () => {
     const cancelledRunId = uuidv7();
 
     await pool.query(
-      `update daily_usage
-       set text_count = text_count + 2
-       where account_id = $1 and usage_date = $2`,
-      [accountId, before.usage_date],
-    );
-    await pool.query(
       `insert into ai_runs
-       (id, account_id, conversation_id, usage_date, usage_kind, status,
-        started_at, deadline_at, heartbeat_at, completed_at)
+       (id, account_id, conversation_id, status, started_at, deadline_at,
+        heartbeat_at, completed_at)
        values
-       ($1, $5, $6, $7, 'text', 'reserved', $8, $8, $8, null),
-       ($2, $5, $6, $7, 'text', 'reserved', $9, $9, $9, null),
-       ($3, $5, $6, $7, 'text', 'completed', $8, $8, $8, $9),
-       ($4, $5, $6, $7, 'text', 'cancelled', $8, $8, $8, $9)`,
+       ($1, $5, $6, 'reserved', $7, $7, $7, null),
+       ($2, $5, $6, 'reserved', $8, $8, $8, null),
+       ($3, $5, $6, 'completed', $7, $7, $7, $8),
+       ($4, $5, $6, 'cancelled', $7, $7, $7, $8)`,
       [
         staleRunId,
         freshRunId,
@@ -562,7 +632,6 @@ runIntegration('Shopport API vertical flow', () => {
         cancelledRunId,
         accountId,
         conversationId,
-        before.usage_date,
         overdue,
         future,
       ],
@@ -579,18 +648,11 @@ runIntegration('Shopport API vertical flow', () => {
       [[staleRunId, freshRunId, completedRunId, cancelledRunId]],
     );
     const statuses = new Map(runs.rows.map(({ id, status }) => [id, status]));
-    const after = await pool.query<{ text_count: number }>(
-      `select text_count
-       from daily_usage
-       where account_id = $1 and usage_date = $2`,
-      [accountId, before.usage_date],
-    );
 
     expect(statuses.get(staleRunId)).toBe('failed');
     expect(statuses.get(freshRunId)).toBe('reserved');
     expect(statuses.get(completedRunId)).toBe('completed');
     expect(statuses.get(cancelledRunId)).toBe('cancelled');
-    expect(after.rows.at(0)?.text_count).toBe(before.text_count + 1);
   }, 30_000);
 
   it('uses archive storage and purges each split bucket', async () => {
@@ -639,12 +701,11 @@ runIntegration('Shopport API vertical flow', () => {
       /\/original$/u,
       '/normalized.jpg',
     );
-    const now = new Date();
     await pool.query(
       `insert into accounts
-       (id, display_name, trial_started_at, trial_ends_at)
-       values ($1, 'purge', $2, $3)`,
-      [purgeAccountId, now, new Date(now.getTime() + 60_000)],
+       (id, display_name)
+       values ($1, 'purge')`,
+      [purgeAccountId],
     );
     await pool.query(
       `insert into outbox (id, topic, payload)

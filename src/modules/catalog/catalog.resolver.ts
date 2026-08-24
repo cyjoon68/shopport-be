@@ -1,7 +1,6 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { z } from 'zod';
 
-import { CatalogLoader } from './catalog.loader.js';
 import type { ProductGraphql } from './catalog.mapper.js';
 import { productCursor, toProductGraphql } from './catalog.mapper.js';
 import { CatalogService } from './catalog.service.js';
@@ -23,10 +22,7 @@ const idSchema = z.uuid();
 
 @Resolver('Product')
 export class CatalogResolver {
-  public constructor(
-    private readonly catalog: CatalogService,
-    private readonly loader: CatalogLoader,
-  ) {}
+  public constructor(private readonly catalog: CatalogService) {}
 
   @Query('searchProducts')
   public async searchProducts(
@@ -52,7 +48,10 @@ export class CatalogResolver {
   }
 
   @Query('product')
-  public async product(@Args('id') id: unknown): Promise<ProductGraphql> {
-    return toProductGraphql(await this.loader.load(idSchema.parse(id)));
+  public async product(
+    @Args('id') id: unknown,
+  ): Promise<ProductGraphql | null> {
+    const product = await this.catalog.getProduct(idSchema.parse(id));
+    return product ? toProductGraphql(product) : null;
   }
 }

@@ -14,7 +14,6 @@ const productionEnvironment = {
   NODE_ENV: 'production',
   JWT_SECRET: 'a-secure-production-jwt-secret-value',
   KAKAO_NATIVE_APP_KEY: 'secure-kakao-native-key',
-  REVENUECAT_WEBHOOK_SECRET: 'secure-revenuecat-webhook-secret',
   COMMAND_CODE_API_KEY: 'command-code-production-api-key',
   COMMAND_CODE_MODEL: 'gpt-5.4-mini',
   RAW_ASSET_BUCKET: 'shopport-production-raw',

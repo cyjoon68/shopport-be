@@ -1,26 +1,44 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
 
+import type { CursorPayload } from '../../common/cursor.js';
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
 import { savedProducts } from '../../database/schema.js';
+
+type SavedProductRecord = Readonly<{
+  productId: string;
+  savedAt: Date;
+}>;
 
 @Injectable()
 export class FavoritesRepository {
   public constructor(@Inject(DATABASE) private readonly database: Database) {}
 
-  public async list(
+  public list = (
     accountId: string,
     first: number,
-  ): Promise<ReadonlyArray<string>> {
-    const rows = await this.database
-      .select({ productId: savedProducts.productId })
+    after: CursorPayload | null,
+  ): Promise<ReadonlyArray<SavedProductRecord>> => {
+    const cursorCondition = after
+      ? or(
+          lt(savedProducts.savedAt, new Date(after.createdAt)),
+          and(
+            eq(savedProducts.savedAt, new Date(after.createdAt)),
+            lt(savedProducts.productId, after.id),
+          ),
+        )
+      : undefined;
+    return this.database
+      .select({
+        productId: savedProducts.productId,
+        savedAt: savedProducts.savedAt,
+      })
       .from(savedProducts)
-      .where(eq(savedProducts.accountId, accountId))
-      .orderBy(desc(savedProducts.savedAt))
-      .limit(first);
-    return rows.map(({ productId }) => productId);
-  }
+      .where(and(eq(savedProducts.accountId, accountId), cursorCondition))
+      .orderBy(desc(savedProducts.savedAt), desc(savedProducts.productId))
+      .limit(first + 1);
+  };
 
   public async save(accountId: string, productId: string): Promise<void> {
     await this.database
@@ -29,19 +47,22 @@ export class FavoritesRepository {
       .onConflictDoNothing();
   }
 
-  public async has(accountId: string, productId: string): Promise<boolean> {
+  public hasMany = async (
+    accountId: string,
+    productIds: ReadonlyArray<string>,
+  ): Promise<ReadonlySet<string>> => {
+    if (productIds.length === 0) return new Set();
     const rows = await this.database
       .select({ productId: savedProducts.productId })
       .from(savedProducts)
       .where(
         and(
           eq(savedProducts.accountId, accountId),
-          eq(savedProducts.productId, productId),
+          inArray(savedProducts.productId, [...productIds]),
         ),
-      )
-      .limit(1);
-    return rows.length === 1;
-  }
+      );
+    return new Set(rows.map(({ productId }) => productId));
+  };
 
   public async unsave(accountId: string, productId: string): Promise<void> {
     await this.database

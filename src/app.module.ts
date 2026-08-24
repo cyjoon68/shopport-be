@@ -33,7 +33,6 @@ import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { ConversationModule } from './modules/conversations/conversation.module.js';
 import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { ProfileModule } from './modules/profile/profile.module.js';
-import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 import type { RedisClient } from './redis/redis.module.js';
 import { REDIS, RedisModule } from './redis/redis.module.js';
 import { RedisThrottlerStorage } from './redis/redis-throttler.storage.js';
@@ -94,7 +93,7 @@ import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
             req,
             res,
           }),
-          validationRules: [queryLimitRule(8, 500)],
+          validationRules: [queryLimitRule(9, 30_000)],
           formatError: formatGraphqlError,
           resolvers: {
             BigInt: bigIntScalar,
@@ -112,7 +111,6 @@ import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
     ProfileModule,
     AssetsModule,
     AiModule,
-    SubscriptionsModule,
     HealthModule,
   ],
   providers: [

@@ -7,9 +7,6 @@ settings:
 importers:
   .:
     dependencies:
-      '@ag-ui/core':
-        specifier: 0.1.1-canary.beta.0
-        version: 0.1.1-canary.beta.0(zod@4.4.3)
       '@apollo/server':
         specifier: ^5.0.0
         version: 5.5.1(graphql@16.14.2)(supports-color@8.1.1)

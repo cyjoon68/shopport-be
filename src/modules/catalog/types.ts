@@ -1,4 +1,4 @@
-export type CatalogCapability = 'LIVE_QUERY' | 'LICENSED_FEED';
+type CatalogCapability = 'LIVE_QUERY' | 'LICENSED_FEED';
 
 export type CatalogProduct = Readonly<{
   id: string;
@@ -54,6 +54,5 @@ export type CatalogProvider = Readonly<{
   outboundHosts: ReadonlyArray<string>;
   search: (input: CatalogSearchInput) => Promise<CatalogSearchResult>;
   getProduct: (id: string) => Promise<CatalogProduct | null>;
-  resolveOutboundLink: (id: string) => Promise<string>;
   syncCatalog?: () => Promise<void>;
 }>;

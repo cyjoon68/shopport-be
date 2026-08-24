@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '../database/database.module.js';
@@ -25,6 +25,7 @@ const assetPayload = accountPayload.extend({
 });
 
 type OutboxRecord = Readonly<{
+  attemptCount: number;
   id: string;
   topic: string;
   payload: unknown;
@@ -39,18 +40,48 @@ export class OutboxProcessor {
   ) {}
 
   public process = async (): Promise<boolean> => {
+    const now = new Date();
     const events = await this.database
-      .select({ id: outbox.id, topic: outbox.topic, payload: outbox.payload })
+      .select({
+        attemptCount: outbox.attemptCount,
+        id: outbox.id,
+        topic: outbox.topic,
+        payload: outbox.payload,
+      })
       .from(outbox)
-      .where(isNull(outbox.publishedAt))
-      .orderBy(outbox.createdAt)
+      .where(
+        and(
+          isNull(outbox.publishedAt),
+          isNull(outbox.failedAt),
+          lte(outbox.nextAttemptAt, now),
+        ),
+      )
+      .orderBy(outbox.nextAttemptAt, outbox.createdAt)
       .limit(20);
     for (const event of events) {
-      await this.processEvent(event);
-      await this.database
-        .update(outbox)
-        .set({ publishedAt: new Date() })
-        .where(and(eq(outbox.id, event.id), isNull(outbox.publishedAt)));
+      try {
+        await this.processEvent(event);
+        await this.database
+          .update(outbox)
+          .set({ lastError: null, publishedAt: new Date() })
+          .where(and(eq(outbox.id, event.id), isNull(outbox.publishedAt)));
+      } catch (error) {
+        const attemptCount = event.attemptCount + 1;
+        const failedAt = attemptCount >= 10 ? new Date() : null;
+        const delaySeconds = Math.min(2 ** attemptCount, 3_600);
+        await this.database
+          .update(outbox)
+          .set({
+            attemptCount,
+            failedAt,
+            lastError: (error instanceof Error
+              ? error.message
+              : 'Worker failure'
+            ).slice(0, 500),
+            nextAttemptAt: new Date(Date.now() + delaySeconds * 1_000),
+          })
+          .where(and(eq(outbox.id, event.id), isNull(outbox.publishedAt)));
+      }
     }
     return events.length > 0;
   };

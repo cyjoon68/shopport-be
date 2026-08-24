@@ -83,8 +83,12 @@ export class ConversationResolver {
   @ResolveField('messages')
   public messagesField(
     @Parent() conversation: ConversationRecord,
+    @Args('first') requestedFirst: number,
   ): Promise<ReadonlyArray<MessageGraphql>> {
-    return this.messages.load(conversation.id);
+    const first = Math.min(Math.max(requestedFirst, 1), 50);
+    return this.messages
+      .load(conversation.id)
+      .then((records) => records.slice(-first));
   }
 
   @Mutation('createConversation')

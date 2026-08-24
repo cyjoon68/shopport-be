@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { gunzip, gunzipSync, gzipSync } from 'node:zlib';
 
 import { z } from 'zod';
 
@@ -29,6 +30,23 @@ type EncodedArchive = Readonly<{ body: Buffer; checksum: string }>;
 const checksumOf = (body: Buffer): Buffer =>
   createHash('sha256').update(body).digest();
 
+const verifyChecksum = (body: Buffer, expectedChecksum: string): void => {
+  const expected = Buffer.from(expectedChecksum, 'base64');
+  const actual = checksumOf(body);
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    throw new Error('Archive checksum mismatch');
+  }
+};
+
+const parseArchive = (body: Buffer): ReadonlyArray<ArchiveRecord> =>
+  body
+    .toString('utf8')
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => archiveRecordSchema.parse(JSON.parse(line)));
+
+const gunzipAsync = promisify(gunzip);
+
 export const encodeArchive = (
   records: ReadonlyArray<ArchiveRecord>,
 ): EncodedArchive => {
@@ -41,14 +59,14 @@ export const decodeArchive = (
   body: Buffer,
   expectedChecksum: string,
 ): ReadonlyArray<ArchiveRecord> => {
-  const expected = Buffer.from(expectedChecksum, 'base64');
-  const actual = checksumOf(body);
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-    throw new Error('Archive checksum mismatch');
-  }
-  return gunzipSync(body)
-    .toString('utf8')
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((line) => archiveRecordSchema.parse(JSON.parse(line)));
+  verifyChecksum(body, expectedChecksum);
+  return parseArchive(gunzipSync(body));
+};
+
+export const decodeArchiveAsync = async (
+  body: Buffer,
+  expectedChecksum: string,
+): Promise<ReadonlyArray<ArchiveRecord>> => {
+  verifyChecksum(body, expectedChecksum);
+  return parseArchive(await gunzipAsync(body));
 };

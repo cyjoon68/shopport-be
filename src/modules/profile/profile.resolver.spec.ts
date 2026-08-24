@@ -14,16 +14,34 @@ const request = {
 
 const viewer = {
   displayName: '새 닉네임',
-  entitlementExpiresAt: null,
-  entitlementKey: 'trial',
   id: accountId,
-  productId: null,
   profileImageUrl: null,
-  trialEndsAt: new Date('2026-08-30T00:00:00.000Z'),
-  trialStartedAt: new Date('2026-08-23T00:00:00.000Z'),
 } satisfies ViewerRecord;
 
 describe('profile resolver', () => {
+  it('keeps legacy clients on unlimited AI access', async () => {
+    const findViewer = jest.fn<
+      (accountId: string) => Promise<ViewerRecord | null>
+    >(() => Promise.resolve(viewer));
+    const resolver = new ProfileResolver({
+      viewer: findViewer,
+    } as unknown as ProfileRepository);
+
+    const result = await resolver.viewer(request);
+
+    expect(result.entitlement).toEqual({
+      key: 'pro',
+      isActive: true,
+      productId: null,
+      expiresAt: null,
+    });
+    expect(result.trialStartedAt.toISOString()).toBe(
+      '1970-01-01T00:00:00.000Z',
+    );
+    expect(result.trialEndsAt.toISOString()).toBe('9999-12-31T23:59:59.999Z');
+    expect(findViewer).toHaveBeenCalledWith(accountId);
+  });
+
   it('trims and updates the viewer nickname', async () => {
     const updateDisplayName = jest.fn<
       (accountId: string, displayName: string) => Promise<ViewerRecord | null>

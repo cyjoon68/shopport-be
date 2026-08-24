@@ -33,7 +33,6 @@ describe('CatalogService outbound policy', () => {
           hasNextPage: false,
         }),
       getProduct: () => Promise.resolve(product),
-      resolveOutboundLink: () => Promise.resolve(product.outboundUrl),
     };
     const catalog = new CatalogService(provider);
     await expect(catalog.search('상품', 20, null)).rejects.toThrow(

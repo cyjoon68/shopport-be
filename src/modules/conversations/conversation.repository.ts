@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { CursorPayload } from '../../common/cursor.js';
@@ -142,19 +142,34 @@ export class ConversationRepository {
 
   public async messagesFor(
     conversationIds: ReadonlyArray<string>,
+    first: number,
   ): Promise<ReadonlyArray<MessageRecord>> {
     if (conversationIds.length === 0) return [];
-    return this.database
+    const ranked = this.database
       .select({
         id: messages.id,
         conversationId: messages.conversationId,
         role: messages.role,
         status: messages.status,
         createdAt: messages.createdAt,
+        rank: sql<number>`row_number() over (partition by ${messages.conversationId} order by ${messages.createdAt} desc, ${messages.id} desc)`.as(
+          'rank',
+        ),
       })
       .from(messages)
       .where(inArray(messages.conversationId, [...conversationIds]))
-      .orderBy(messages.createdAt, messages.id);
+      .as('ranked_messages');
+    return this.database
+      .select({
+        id: ranked.id,
+        conversationId: ranked.conversationId,
+        role: ranked.role,
+        status: ranked.status,
+        createdAt: ranked.createdAt,
+      })
+      .from(ranked)
+      .where(lte(ranked.rank, first))
+      .orderBy(ranked.createdAt, ranked.id);
   }
 
   public async partsFor(

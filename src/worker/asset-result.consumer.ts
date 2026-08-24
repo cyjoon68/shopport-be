@@ -5,7 +5,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import type { Environment } from '../config/environment.js';
 import type { Database } from '../database/database.module.js';
@@ -43,23 +43,32 @@ export class AssetResultConsumer {
     const received = response.Messages ?? [];
     for (const message of received) {
       if (!message.Body || !message.ReceiptHandle) continue;
-      const result = assetResultSchema.parse(JSON.parse(message.Body));
-      await this.database
-        .update(assets)
-        .set({
-          status: result.status,
-          normalizedKey: result.normalizedKey,
-          width: result.width,
-          height: result.height,
-          updatedAt: new Date(),
-        })
-        .where(eq(assets.id, result.assetId));
-      await this.#sqs.send(
-        new DeleteMessageCommand({
-          QueueUrl: this.#queueUrl,
-          ReceiptHandle: message.ReceiptHandle,
-        }),
-      );
+      try {
+        const result = assetResultSchema.parse(JSON.parse(message.Body));
+        await this.database
+          .update(assets)
+          .set({
+            status: result.status,
+            normalizedKey: result.normalizedKey,
+            width: result.width,
+            height: result.height,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(assets.id, result.assetId),
+              eq(assets.status, 'pending_upload'),
+            ),
+          );
+        await this.#sqs.send(
+          new DeleteMessageCommand({
+            QueueUrl: this.#queueUrl,
+            ReceiptHandle: message.ReceiptHandle,
+          }),
+        );
+      } catch {
+        continue;
+      }
     }
     return received.length > 0;
   };

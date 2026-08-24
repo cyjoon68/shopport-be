@@ -3,7 +3,7 @@ import type { ClarificationDimension } from './ai-stream.adapter.js';
 export const shoppingAmbiguityThreshold = 0.2;
 export const shoppingRequestKinds = ['shopping', 'other'] as const;
 
-export type ShoppingRequestKind = (typeof shoppingRequestKinds)[number];
+type ShoppingRequestKind = (typeof shoppingRequestKinds)[number];
 
 export type ShoppingDeepModeAssessment = Readonly<{
   requestKind: ShoppingRequestKind;

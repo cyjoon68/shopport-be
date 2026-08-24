@@ -162,4 +162,82 @@ describe('CatalogProvider', () => {
       provider.search({ query: '수납함', first: 3, after: null }),
     ).rejects.toThrow('Catalog request failed: 500');
   });
+
+  it('bounds provider request time and response size', async () => {
+    let requestSignal: AbortSignal | null = null;
+    const provider = new CatalogProvider();
+    provider.useFetch((_input, init) => {
+      requestSignal = init?.signal ?? null;
+      return Promise.resolve(
+        jsonResponse({
+          success: true,
+          data: {
+            products: [
+              {
+                id: 'safe',
+                imageUrl: 'https://cdn.daisomall.co.kr/safe.jpg',
+                name: '안전한 상품',
+                price: 1000,
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    await provider.search({ after: null, first: 1, query: '상품' });
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+
+    provider.useFetch(() =>
+      Promise.resolve(
+        jsonResponse({
+          padding: 'x'.repeat(1_100_000),
+          success: true,
+          data: { products: [] },
+        }),
+      ),
+    );
+    await expect(
+      provider.search({ after: null, first: 1, query: '상품' }),
+    ).rejects.toThrow('Catalog response too large');
+  });
+
+  it('limits concurrent per-product inventory requests', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const provider = new CatalogProvider();
+    provider.useFetch(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname === '/api/daiso/products') {
+        return jsonResponse({
+          success: true,
+          data: {
+            products: Array.from({ length: 5 }, (_, index) => ({
+              id: `product-${String(index)}`,
+              imageUrl: `https://cdn.daisomall.co.kr/${String(index)}.jpg`,
+              name: `상품 ${String(index)}`,
+              price: 1000,
+            })),
+          },
+        });
+      }
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active -= 1;
+      return jsonResponse({
+        success: true,
+        data: { storeInventory: { inStockCount: 0, stores: [] } },
+      });
+    });
+
+    await provider.search({
+      after: null,
+      first: 5,
+      location: '서울',
+      query: '상품',
+    });
+
+    expect(maximumActive).toBeLessThanOrEqual(4);
+  });
 });

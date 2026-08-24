@@ -11,8 +11,6 @@ export type AccountSession = Readonly<{
   accountId: string;
   displayName: string;
   profileImageUrl: string | null;
-  trialStartedAt: Date;
-  trialEndsAt: Date;
 }>;
 
 export type TokenPair = Readonly<{
