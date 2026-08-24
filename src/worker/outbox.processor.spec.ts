@@ -1,7 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 
 import type { Database } from '../database/database.module.js';
-import type { RedisClient } from '../redis/redis.module.js';
 import type { ObjectStore } from '../storage/object-store.js';
 import { OutboxProcessor } from './outbox.processor.js';
 
@@ -52,11 +51,9 @@ describe('OutboxProcessor failure isolation', () => {
         ? Promise.reject(new Error('S3 unavailable'))
         : Promise.resolve(),
     );
-    const processor = new OutboxProcessor(
-      database,
-      {} as RedisClient,
-      { deleteKey } as unknown as ObjectStore,
-    );
+    const processor = new OutboxProcessor(database, {
+      deleteKey,
+    } as unknown as ObjectStore);
 
     await expect(processor.process()).resolves.toBe(true);
 

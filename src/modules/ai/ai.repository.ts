@@ -10,11 +10,13 @@ import { v7 as uuidv7 } from 'uuid';
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
 import {
+  aiRunEvents,
   aiRuns,
   assets,
   conversations,
   messageParts,
   messages,
+  rateLimits,
 } from '../../database/schema.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
@@ -375,6 +377,15 @@ export class AiRepository {
       .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
   };
 
+  public isRunCancelled = async (runId: string): Promise<boolean> => {
+    const runs = await this.database
+      .select({ status: aiRuns.status })
+      .from(aiRuns)
+      .where(eq(aiRuns.id, runId))
+      .limit(1);
+    return runs.at(0)?.status === 'cancelled';
+  };
+
   public assertOwnedRun = async (
     accountId: string,
     runId: string,
@@ -463,7 +474,11 @@ export class AiRepository {
       for (const stale of staleRuns) {
         const runs = await transaction
           .update(aiRuns)
-          .set({ status: 'failed', completedAt: now })
+          .set({
+            status: 'failed',
+            completedAt: now,
+            streamClosedAt: now,
+          })
           .where(and(eq(aiRuns.id, stale.id), eq(aiRuns.status, 'reserved')))
           .returning({ id: aiRuns.id });
         const run = runs.at(0);
@@ -472,4 +487,21 @@ export class AiRepository {
       }
       return recovered;
     });
+
+  public cleanupRuntimeState = async (now = new Date()): Promise<void> => {
+    await Promise.all([
+      this.database.delete(aiRunEvents).where(lte(aiRunEvents.expiresAt, now)),
+      this.database
+        .delete(rateLimits)
+        .where(
+          and(
+            lte(rateLimits.windowExpiresAt, now),
+            or(
+              isNull(rateLimits.blockedUntil),
+              lte(rateLimits.blockedUntil, now),
+            ),
+          ),
+        ),
+    ]);
+  };
 }

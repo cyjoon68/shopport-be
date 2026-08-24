@@ -11,10 +11,11 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { ThrottlerModule } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerModule } from 'nestjs-pino';
+import type { Pool } from 'pg';
 
 import type { Environment } from './config/environment.js';
 import { validateEnvironment } from './config/environment.js';
-import { DatabaseModule } from './database/database.module.js';
+import { DATABASE_POOL, DatabaseModule } from './database/database.module.js';
 import { formatGraphqlError } from './graphql/error-formatter.js';
 import { PersistedOperationsMiddleware } from './graphql/persisted-operations.middleware.js';
 import { queryLimitRule } from './graphql/query-limits.js';
@@ -33,10 +34,8 @@ import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { ConversationModule } from './modules/conversations/conversation.module.js';
 import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { ProfileModule } from './modules/profile/profile.module.js';
-import type { RedisClient } from './redis/redis.module.js';
-import { REDIS, RedisModule } from './redis/redis.module.js';
-import { RedisThrottlerStorage } from './redis/redis-throttler.storage.js';
-import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
+import { PostgresThrottlerStorage } from './throttling/postgres-throttler.storage.js';
+import { ShopportThrottlerGuard } from './throttling/shopport-throttler.guard.js';
 
 @Module({
   imports: [
@@ -66,12 +65,11 @@ import { ShopportThrottlerGuard } from './redis/shopport-throttler.guard.js';
       }),
     }),
     DatabaseModule,
-    RedisModule,
     ThrottlerModule.forRootAsync({
-      imports: [RedisModule],
-      inject: [REDIS],
-      useFactory: (redis: RedisClient) => ({
-        storage: new RedisThrottlerStorage(redis),
+      imports: [DatabaseModule],
+      inject: [DATABASE_POOL],
+      useFactory: (pool: Pool) => ({
+        storage: new PostgresThrottlerStorage(pool),
         throttlers: [
           { name: 'default', ttl: 60_000, limit: 120, blockDuration: 60_000 },
         ],

@@ -12,7 +12,6 @@ const environmentSchema = z
     DATABASE_URL: z
       .string()
       .default('postgresql://shopport:shopport@localhost:5432/shopport'),
-    REDIS_URL: z.url().default('redis://localhost:6379'),
     AWS_REGION: z.string().default('ap-northeast-2'),
     AWS_ENDPOINT_URL: z.url().optional(),
     ASSET_BUCKET: z.string().default('shopport-assets'),
@@ -27,9 +26,9 @@ const environmentSchema = z
     JWT_ISSUER: z.string().default('shopport'),
     JWT_AUDIENCE: z.string().default('shopport-mobile'),
     KAKAO_NATIVE_APP_KEY: z.string().default('local-kakao-key'),
-    COMMAND_CODE_API_KEY: z.string().trim().min(1),
-    COMMAND_CODE_MODEL: z.string().trim().min(1).default('gpt-5.4-mini'),
-    COMMAND_CODE_MAX_OUTPUT_TOKENS: z.coerce
+    PROVIDER_API_KEY: z.string().trim().min(1),
+    PROVIDER_MODEL: z.string().trim().min(1).default('gpt-5.4-mini'),
+    PROVIDER_MAX_OUTPUT_TOKENS: z.coerce
       .number()
       .int()
       .min(128)
@@ -39,12 +38,12 @@ const environmentSchema = z
   })
   .superRefine((environment, context) => {
     const production = environment.APP_ENV === 'prod';
-    if (/^claude-/iu.test(environment.COMMAND_CODE_MODEL)) {
+    if (/^claude-/iu.test(environment.PROVIDER_MODEL)) {
       context.addIssue({
         code: 'custom',
         message:
           'Command Code Claude models require the Anthropic Messages endpoint',
-        path: ['COMMAND_CODE_MODEL'],
+        path: ['PROVIDER_MODEL'],
       });
     }
     if (
@@ -116,15 +115,15 @@ const environmentSchema = z
     }
     if (
       production &&
-      environment.COMMAND_CODE_API_KEY &&
+      environment.PROVIDER_API_KEY &&
       /(?:local|development|replace|example|changeme)/iu.test(
-        environment.COMMAND_CODE_API_KEY,
+        environment.PROVIDER_API_KEY,
       )
     ) {
       context.addIssue({
         code: 'custom',
         message: 'Production secrets must not use local placeholder values',
-        path: ['COMMAND_CODE_API_KEY'],
+        path: ['PROVIDER_API_KEY'],
       });
     }
   });

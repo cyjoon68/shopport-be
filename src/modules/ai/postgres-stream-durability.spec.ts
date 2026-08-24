@@ -1,0 +1,64 @@
+import { describe, expect, it, jest } from '@jest/globals';
+import { EventType, type StreamChunk } from '@tanstack/ai';
+import type { Pool } from 'pg';
+
+import { PostgresStreamDurability } from './postgres-stream-durability.js';
+
+const runId = '0198a122-0c00-7000-8000-000000000001';
+
+describe('PostgresStreamDurability', () => {
+  it('preserves append offsets', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValue({ rows: [{ id: '41' }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      null,
+    );
+    const chunks: Array<StreamChunk> = [
+      { type: EventType.RUN_STARTED, threadId: 'thread', runId: 'run' },
+    ];
+
+    await expect(durability.append(chunks)).resolves.toEqual(['41']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('insert into'), [
+      runId,
+      JSON.stringify(chunks),
+    ]);
+  });
+
+  it('ends replay after the stream is closed', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '42',
+    );
+
+    await expect(
+      durability.read('42')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends a legacy Redis offset without querying PostgreSQL', async () => {
+    const query = jest.fn();
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '42-0',
+    );
+
+    await expect(
+      durability.read('42-0')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).not.toHaveBeenCalled();
+  });
+});

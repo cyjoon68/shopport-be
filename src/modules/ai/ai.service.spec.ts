@@ -14,7 +14,6 @@ import type {
 } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import type { AiTools } from './ai-tools.js';
-import type { RedisRunCancellation } from './redis-run-cancellation.js';
 
 const emptyStream = async function* (): AsyncIterable<StreamChunk> {
   await Promise.resolve();
@@ -124,7 +123,6 @@ const createService = (): ServiceFixture => {
       repository,
       { createSession } as unknown as AiTools,
       {} as AssetsService,
-      {} as RedisRunCancellation,
       stream,
     ),
     conversationHistory,

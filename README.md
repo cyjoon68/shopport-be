@@ -29,4 +29,4 @@ The API uses the Command Code Provider API and live catalog providers. Crawling,
 
 ## Production blockers
 
-- `COMMAND_CODE_API_KEY` is required. `COMMAND_CODE_MODEL` defaults to the vision-capable `gpt-5.4-mini`; Claude model IDs are rejected because they require Command Code's Anthropic Messages endpoint.
+- `PROVIDER_API_KEY` is required. `PROVIDER_MODEL` defaults to the vision-capable `gpt-5.4-mini`; Claude model IDs are rejected because they require Command Code's Anthropic Messages endpoint.

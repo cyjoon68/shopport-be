@@ -14,8 +14,8 @@ const productionEnvironment = {
   NODE_ENV: 'production',
   JWT_SECRET: 'a-secure-production-jwt-secret-value',
   KAKAO_NATIVE_APP_KEY: 'secure-kakao-native-key',
-  COMMAND_CODE_API_KEY: 'command-code-production-api-key',
-  COMMAND_CODE_MODEL: 'gpt-5.4-mini',
+  PROVIDER_API_KEY: 'provider-production-api-key',
+  PROVIDER_MODEL: 'gpt-5.4-mini',
   RAW_ASSET_BUCKET: 'shopport-production-raw',
   NORMALIZED_ASSET_BUCKET: 'shopport-production-normalized',
   ARCHIVE_BUCKET: 'shopport-production-archive',
@@ -27,7 +27,7 @@ const productionEnvironment = {
 };
 
 describe('validateEnvironment', () => {
-  it('requires a Command Code key', () => {
+  it('requires an AI provider key', () => {
     expect(() => validateEnvironment({})).toThrow();
   });
 
@@ -60,7 +60,7 @@ describe('validateEnvironment', () => {
   });
 
   it.each([
-    ['COMMAND_CODE_API_KEY', ''],
+    ['PROVIDER_API_KEY', ''],
     ['JWT_SECRET', 'local-development-secret-32-bytes'],
     ['PERSISTED_OPERATION_MANIFEST', ''],
     ['CLOUDFRONT_PRIVATE_KEY', ''],
@@ -76,8 +76,8 @@ describe('validateEnvironment', () => {
   it('rejects Claude models on the chat completions adapter', () => {
     expect(() =>
       validateEnvironment({
-        COMMAND_CODE_API_KEY: 'command-code-api-key',
-        COMMAND_CODE_MODEL: 'claude-sonnet-5',
+        PROVIDER_API_KEY: 'provider-api-key',
+        PROVIDER_MODEL: 'claude-sonnet-5',
       }),
     ).toThrow();
   });

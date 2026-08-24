@@ -8,8 +8,6 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
 import request from 'supertest';
-import type { StartedTestContainer } from 'testcontainers';
-import { GenericContainer } from 'testcontainers';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
@@ -214,7 +212,6 @@ const secondIntegrationSubject = 'integration-kakao-second';
 describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
-  let redis: StartedTestContainer;
   let accessToken: string;
   let refreshToken: string;
   let conversationId: string;
@@ -227,7 +224,6 @@ describe('Shopport API vertical flow', () => {
   let archiveReader: ArchiveReader;
   let outboxProcessor: OutboxProcessor;
   let postgresStarted = false;
-  let redisStarted = false;
   let poolInitialized = false;
   let workerModuleInitialized = false;
   let appInitialized = false;
@@ -239,16 +235,11 @@ describe('Shopport API vertical flow', () => {
       .withPassword('shopport')
       .start();
     postgresStarted = true;
-    redis = await new GenericContainer('redis:7.4-alpine')
-      .withExposedPorts(6379)
-      .start();
-    redisStarted = true;
     process.env.NODE_ENV = 'test';
     process.env.APP_ENV = 'dev';
     process.env.DATABASE_URL = postgres.getConnectionUri();
-    process.env.REDIS_URL = `redis://${redis.getHost()}:${String(redis.getMappedPort(6379))}`;
     process.env.JWT_SECRET = 'integration-test-secret-at-least-32-bytes';
-    process.env.COMMAND_CODE_API_KEY = 'integration-command-code-key';
+    process.env.PROVIDER_API_KEY = 'integration-provider-key';
     process.env.PERSISTED_OPERATION_MANIFEST = '';
     process.env.AWS_ENDPOINT_URL = 'http://localhost:4566';
     process.env.RAW_ASSET_BUCKET = 'integration-raw';
@@ -307,7 +298,6 @@ describe('Shopport API vertical flow', () => {
     if (workerModuleInitialized) await workerModule.close();
     if (poolInitialized) await pool.end();
     if (postgresStarted) await postgres.stop();
-    if (redisStarted) await redis.stop();
   });
 
   it('applies additive migrations idempotently', async () => {
@@ -315,7 +305,7 @@ describe('Shopport API vertical flow', () => {
       `select column_name
        from information_schema.columns
        where table_name = 'ai_runs'
-         and column_name in ('deadline_at', 'heartbeat_at')`,
+         and column_name in ('deadline_at', 'heartbeat_at', 'stream_closed_at')`,
     );
     const constraint = await pool.query<{ definition: string }>(
       `select pg_get_constraintdef(oid) as definition
@@ -323,7 +313,7 @@ describe('Shopport API vertical flow', () => {
        where conname = 'ai_runs_status_check'`,
     );
 
-    expect(columns.rows).toHaveLength(2);
+    expect(columns.rows).toHaveLength(3);
     expect(constraint.rows.at(0)?.definition).toContain('cancelled');
   });
 
