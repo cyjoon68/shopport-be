@@ -35,7 +35,7 @@ const bodySchema = z.looseObject({
   forwardedProps: z.record(z.string(), z.unknown()).default({}),
 });
 
-export type AiRequest = Readonly<{
+type AiRequest = Readonly<{
   threadId: string;
   runId: string;
   storageRunId: string;

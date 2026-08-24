@@ -8,7 +8,6 @@ import {
   accounts,
   authIdentities,
   authSessions,
-  entitlements,
 } from '../../database/schema.js';
 import type { AccountSession, VerifiedIdentity } from './auth.types.js';
 
@@ -31,7 +30,6 @@ export class AuthRepository {
 
   public findOrCreateAccount = async (
     identity: VerifiedIdentity,
-    now: Date,
   ): Promise<AccountSession> =>
     this.database.transaction(async (transaction) => {
       await transaction.execute(
@@ -42,8 +40,6 @@ export class AuthRepository {
           accountId: accounts.id,
           displayName: accounts.displayName,
           profileImageUrl: accounts.profileImageUrl,
-          trialStartedAt: accounts.trialStartedAt,
-          trialEndsAt: accounts.trialEndsAt,
         })
         .from(authIdentities)
         .innerJoin(accounts, eq(authIdentities.accountId, accounts.id))
@@ -59,13 +55,10 @@ export class AuthRepository {
       if (account) return account;
 
       const accountId = uuidv7();
-      const trialEndsAt = new Date(now.getTime() + 168 * 60 * 60 * 1_000);
       await transaction.insert(accounts).values({
         id: accountId,
         displayName: identity.displayName,
         profileImageUrl: identity.profileImageUrl,
-        trialStartedAt: now,
-        trialEndsAt,
       });
       await transaction.insert(authIdentities).values({
         id: uuidv7(),
@@ -73,15 +66,10 @@ export class AuthRepository {
         provider: identity.provider,
         providerSubject: identity.subject,
       });
-      await transaction
-        .insert(entitlements)
-        .values({ accountId, key: 'trial' });
       return {
         accountId,
         displayName: identity.displayName,
         profileImageUrl: identity.profileImageUrl,
-        trialStartedAt: now,
-        trialEndsAt,
       };
     });
 
@@ -151,15 +139,24 @@ export class AuthRepository {
         return { status: 'invalid' };
       }
       if (session.revokedAt) {
-        await transaction
-          .update(authSessions)
-          .set({ revokedAt: new Date() })
-          .where(
-            and(
-              eq(authSessions.accountId, session.accountId),
-              isNull(authSessions.revokedAt),
-            ),
-          );
+        await transaction.execute(sql`
+          with recursive compromised as (
+            select ${authSessions.id} as id,
+                   ${authSessions.replacedBySessionId} as next_id
+            from ${authSessions}
+            where ${authSessions.id} = ${input.previousId}
+            union all
+            select child.id, child.replaced_by_session_id
+            from ${authSessions} child
+            inner join compromised parent on child.id = parent.next_id
+          )
+          update ${authSessions}
+          set revoked_at = coalesce(${authSessions.revokedAt}, now()),
+              updated_at = now()
+          where ${authSessions.id} in (
+            select id from compromised where id <> ${input.previousId}
+          )
+        `);
         return { status: 'replay' };
       }
       const nextId = uuidv7();

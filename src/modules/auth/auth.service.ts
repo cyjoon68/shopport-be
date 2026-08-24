@@ -32,10 +32,7 @@ export class AuthService {
     nonce: string,
   ): Promise<TokenPair> => {
     const verified = await this.verifier.verify(provider, idToken, nonce);
-    const account = await this.repository.findOrCreateAccount(
-      verified,
-      new Date(),
-    );
+    const account = await this.repository.findOrCreateAccount(verified);
     return this.issueTokens(account.accountId);
   };
 

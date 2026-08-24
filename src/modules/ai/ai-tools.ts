@@ -7,7 +7,7 @@ import type { AiProviderId } from './ai-request.js';
 
 type CatalogReader = Pick<CatalogService, 'getProduct' | 'search'>;
 
-export type AiProductSearchInput = Readonly<{
+type AiProductSearchInput = Readonly<{
   query: string;
   providerId?: 'daiso' | 'oliveyoung';
   budgetMax?: number;

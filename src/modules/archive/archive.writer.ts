@@ -23,6 +23,8 @@ type PendingMessage = Readonly<{
   createdAt: Date;
 }>;
 
+type ArchiveDatabase = Pick<Database, 'delete' | 'insert' | 'select'>;
+
 @Injectable()
 export class ArchiveWriter {
   public constructor(
@@ -30,41 +32,46 @@ export class ArchiveWriter {
     private readonly objects: ObjectStore,
   ) {}
 
-  public async archive(): Promise<boolean> {
-    const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1_000);
-    const pending = await this.database
-      .select({
-        id: messages.id,
-        accountId: conversations.accountId,
-        conversationId: messages.conversationId,
-        role: messages.role,
-        status: messages.status,
-        createdAt: messages.createdAt,
-      })
-      .from(messages)
-      .innerJoin(conversations, eq(messages.conversationId, conversations.id))
-      .where(lt(messages.createdAt, cutoff))
-      .orderBy(asc(messages.createdAt), asc(messages.id))
-      .limit(500);
-    if (pending.length === 0) return false;
-    const grouped = new Map<string, PendingMessage[]>();
-    for (const message of pending) {
-      const group = grouped.get(message.conversationId) ?? [];
-      group.push(message);
-      grouped.set(message.conversationId, group);
-    }
-    for (const group of grouped.values()) await this.archiveGroup(group);
-    return true;
-  }
+  public archive = (): Promise<boolean> =>
+    this.database.transaction(async (transaction) => {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1_000);
+      const pending = await transaction
+        .select({
+          id: messages.id,
+          accountId: conversations.accountId,
+          conversationId: messages.conversationId,
+          role: messages.role,
+          status: messages.status,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+        .where(lt(messages.createdAt, cutoff))
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .limit(500)
+        .for('update', { skipLocked: true });
+      if (pending.length === 0) return false;
+      const grouped = new Map<string, PendingMessage[]>();
+      for (const message of pending) {
+        const group = grouped.get(message.conversationId) ?? [];
+        group.push(message);
+        grouped.set(message.conversationId, group);
+      }
+      for (const group of grouped.values()) {
+        await this.archiveGroup(transaction, group);
+      }
+      return true;
+    });
 
   private readonly archiveGroup = async (
+    database: ArchiveDatabase,
     group: ReadonlyArray<PendingMessage>,
   ): Promise<void> => {
     const first = group.at(0);
     const last = group.at(-1);
     if (!first || !last) return;
     const ids = group.map(({ id }) => id);
-    const parts = await this.database
+    const parts = await database
       .select({
         id: messageParts.id,
         messageId: messageParts.messageId,
@@ -75,6 +82,12 @@ export class ArchiveWriter {
       .from(messageParts)
       .where(inArray(messageParts.messageId, ids))
       .orderBy(messageParts.position);
+    const partsByMessage = new Map<string, typeof parts>();
+    for (const part of parts) {
+      const messagePartsForId = partsByMessage.get(part.messageId) ?? [];
+      messagePartsForId.push(part);
+      partsByMessage.set(part.messageId, messagePartsForId);
+    }
     const records: ReadonlyArray<ArchiveRecord> = group.map((message) => ({
       message: {
         id: message.id,
@@ -83,10 +96,10 @@ export class ArchiveWriter {
         status: message.status,
         createdAt: message.createdAt.toISOString(),
       },
-      parts: parts.filter(({ messageId }) => messageId === message.id),
+      parts: partsByMessage.get(message.id) ?? [],
     }));
     const encoded = encodeArchive(records);
-    const objectKey = `archives/${first.accountId}/${first.conversationId}/${String(first.createdAt.getTime())}-${String(last.createdAt.getTime())}-${uuidv7()}.ndjson.gz`;
+    const objectKey = `archives/${first.accountId}/${first.conversationId}/${first.id}-${last.id}.ndjson.gz`;
     await this.objects.put(
       'archive',
       objectKey,
@@ -98,21 +111,19 @@ export class ArchiveWriter {
       await this.objects.get('archive', objectKey),
       encoded.checksum,
     );
-    await this.database.transaction(async (transaction) => {
-      await transaction.insert(archiveManifests).values({
-        id: uuidv7(),
-        accountId: first.accountId,
-        conversationId: first.conversationId,
-        objectKey,
-        checksum: encoded.checksum,
-        fromAt: first.createdAt,
-        toAt: last.createdAt,
-        messageCount: group.length,
-      });
-      await transaction
-        .delete(messageParts)
-        .where(inArray(messageParts.messageId, ids));
-      await transaction.delete(messages).where(inArray(messages.id, ids));
+    await database.insert(archiveManifests).values({
+      id: uuidv7(),
+      accountId: first.accountId,
+      conversationId: first.conversationId,
+      objectKey,
+      checksum: encoded.checksum,
+      fromAt: first.createdAt,
+      toAt: last.createdAt,
+      messageCount: group.length,
     });
+    await database
+      .delete(messageParts)
+      .where(inArray(messageParts.messageId, ids));
+    await database.delete(messages).where(inArray(messages.id, ids));
   };
 }

@@ -41,13 +41,24 @@ const bootstrap = async (): Promise<void> => {
   while (!controller.signal.aborted) {
     const recoveryDue = Date.now() >= nextRecoveryAt;
     if (recoveryDue) nextRecoveryAt = Date.now() + recoveryCadenceMilliseconds;
-    const [assetWork, outboxWork, archiveWork, recoveredRuns] =
-      await Promise.all([
-        assets.consume(),
-        outbox.process(),
-        archives.archive(),
-        recoveryDue ? staleRuns.recover() : Promise.resolve(0),
-      ]);
+    const results = await Promise.allSettled([
+      assets.consume(),
+      outbox.process(),
+      archives.archive(),
+      recoveryDue ? staleRuns.recover() : Promise.resolve(0),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        process.stderr.write(
+          `${result.reason instanceof Error ? result.reason.message : 'Worker task failed'}\n`,
+        );
+      }
+    }
+    const assetWork = results[0].status === 'fulfilled' && results[0].value;
+    const outboxWork = results[1].status === 'fulfilled' && results[1].value;
+    const archiveWork = results[2].status === 'fulfilled' && results[2].value;
+    const recoveredRuns =
+      results[3].status === 'fulfilled' ? results[3].value : 0;
     if (!assetWork && !outboxWork && !archiveWork && recoveredRuns === 0) {
       await delay(500, controller.signal);
     }

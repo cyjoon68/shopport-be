@@ -10,19 +10,15 @@ import { v7 as uuidv7 } from 'uuid';
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
 import {
-  accounts,
   aiRuns,
   assets,
   conversations,
-  dailyUsage,
-  entitlements,
   messageParts,
   messages,
 } from '../../database/schema.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { DEFAULT_CONVERSATION_TITLE } from '../conversations/conversation.types.js';
-import { AiAccessError } from './ai.errors.js';
 import type { AiProviderId } from './ai-request.js';
 import { providerIdsSchema } from './ai-request.js';
 import type {
@@ -30,7 +26,6 @@ import type {
   AiProductRecommendation,
   AskUser,
 } from './ai-stream.adapter.js';
-import { getKstUsageDate, reserveQuota } from './quota.js';
 
 type BeginRunInput = Readonly<{
   accountId: string;
@@ -49,7 +44,7 @@ type NewMessagePart = {
   payload: unknown;
 };
 
-export type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
+type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
 
 const providerIdsFromAskUser = (
   payload: unknown,
@@ -72,7 +67,6 @@ export class AiRepository {
   public beginRun = (input: BeginRunInput): Promise<boolean> =>
     this.database.transaction(async (transaction) => {
       const now = new Date();
-      const usageDate = getKstUsageDate(now);
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${input.userMessageId}))`,
       );
@@ -90,8 +84,6 @@ export class AiRepository {
           id: input.runId,
           accountId: input.accountId,
           conversationId: input.conversationId,
-          usageDate,
-          usageKind: input.assetId ? 'image' : 'text',
           status: 'reserved',
           startedAt: now,
           deadlineAt: new Date(now.getTime() + 60_000),
@@ -101,32 +93,19 @@ export class AiRepository {
         .returning({ id: aiRuns.id });
       if (inserted.length === 0) return false;
 
-      const accessRows = await transaction
-        .select({
-          trialEndsAt: accounts.trialEndsAt,
-          entitlementKey: entitlements.key,
-          entitlementExpiresAt: entitlements.expiresAt,
-        })
-        .from(accounts)
-        .innerJoin(entitlements, eq(accounts.id, entitlements.accountId))
-        .innerJoin(
-          conversations,
+      const ownedConversations = await transaction
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(
           and(
-            eq(conversations.accountId, accounts.id),
             eq(conversations.id, input.conversationId),
+            eq(conversations.accountId, input.accountId),
+            isNull(conversations.deletedAt),
           ),
         )
-        .where(eq(accounts.id, input.accountId))
         .limit(1);
-      const access = accessRows.at(0);
-      if (!access) throw new NotFoundException('Conversation not found');
-      const isPro =
-        access.entitlementKey === 'pro' &&
-        (access.entitlementExpiresAt === null ||
-          access.entitlementExpiresAt > now);
-      if (!isPro && access.trialEndsAt <= now) {
-        throw new AiAccessError('TRIAL_EXPIRED');
-      }
+      if (ownedConversations.length === 0)
+        throw new NotFoundException('Conversation not found');
       if (input.assetId) {
         const assetRows = await transaction
           .select({ id: assets.id })
@@ -144,45 +123,6 @@ export class AiRepository {
           throw new NotFoundException('Ready image asset not found');
         }
       }
-
-      await transaction
-        .insert(dailyUsage)
-        .values({ accountId: input.accountId, usageDate })
-        .onConflictDoNothing();
-      const usageRows = await transaction
-        .select({
-          textCount: dailyUsage.textCount,
-          imageCount: dailyUsage.imageCount,
-        })
-        .from(dailyUsage)
-        .where(
-          and(
-            eq(dailyUsage.accountId, input.accountId),
-            eq(dailyUsage.usageDate, usageDate),
-          ),
-        )
-        .for('update');
-      const usage = usageRows.at(0);
-      if (!usage) throw new Error('Usage reservation failed');
-      let reserved;
-      try {
-        reserved = reserveQuota(
-          usage,
-          { hasText: input.text.length > 0, hasImage: input.assetId !== null },
-          isPro ? 'pro' : 'trial',
-        );
-      } catch {
-        throw new AiAccessError('QUOTA_EXCEEDED');
-      }
-      await transaction
-        .update(dailyUsage)
-        .set({ ...reserved, updatedAt: now })
-        .where(
-          and(
-            eq(dailyUsage.accountId, input.accountId),
-            eq(dailyUsage.usageDate, usageDate),
-          ),
-        );
 
       await transaction.insert(messages).values({
         id: input.userMessageId,
@@ -428,33 +368,12 @@ export class AiRepository {
       );
   };
 
-  public failRun = (runId: string): Promise<void> =>
-    this.database.transaction(async (transaction) => {
-      const runs = await transaction
-        .update(aiRuns)
-        .set({ status: 'failed', completedAt: new Date() })
-        .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
-        .returning({
-          accountId: aiRuns.accountId,
-          usageDate: aiRuns.usageDate,
-          usageKind: aiRuns.usageKind,
-        });
-      const run = runs.at(0);
-      if (!run) return;
-      const countUpdate =
-        run.usageKind === 'image'
-          ? { imageCount: sql`greatest(${dailyUsage.imageCount} - 1, 0)` }
-          : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
-      await transaction
-        .update(dailyUsage)
-        .set({ ...countUpdate, updatedAt: new Date() })
-        .where(
-          and(
-            eq(dailyUsage.accountId, run.accountId),
-            eq(dailyUsage.usageDate, run.usageDate),
-          ),
-        );
-    });
+  public failRun = async (runId: string): Promise<void> => {
+    await this.database
+      .update(aiRuns)
+      .set({ status: 'failed', completedAt: new Date() })
+      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
+  };
 
   public assertOwnedRun = async (
     accountId: string,
@@ -494,28 +413,9 @@ export class AiRepository {
             eq(aiRuns.status, 'reserved'),
           ),
         )
-        .returning({
-          accountId: aiRuns.accountId,
-          usageDate: aiRuns.usageDate,
-          usageKind: aiRuns.usageKind,
-        });
+        .returning({ id: aiRuns.id });
       const run = runs.at(0);
-      if (run) {
-        const countUpdate =
-          run.usageKind === 'image'
-            ? { imageCount: sql`greatest(${dailyUsage.imageCount} - 1, 0)` }
-            : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
-        await transaction
-          .update(dailyUsage)
-          .set({ ...countUpdate, updatedAt: new Date() })
-          .where(
-            and(
-              eq(dailyUsage.accountId, run.accountId),
-              eq(dailyUsage.usageDate, run.usageDate),
-            ),
-          );
-        return 'cancelled';
-      }
+      if (run) return 'cancelled';
       const owned = await transaction
         .select({ status: aiRuns.status })
         .from(aiRuns)
@@ -565,26 +465,9 @@ export class AiRepository {
           .update(aiRuns)
           .set({ status: 'failed', completedAt: now })
           .where(and(eq(aiRuns.id, stale.id), eq(aiRuns.status, 'reserved')))
-          .returning({
-            accountId: aiRuns.accountId,
-            usageDate: aiRuns.usageDate,
-            usageKind: aiRuns.usageKind,
-          });
+          .returning({ id: aiRuns.id });
         const run = runs.at(0);
         if (!run) continue;
-        const countUpdate =
-          run.usageKind === 'image'
-            ? { imageCount: sql`greatest(${dailyUsage.imageCount} - 1, 0)` }
-            : { textCount: sql`greatest(${dailyUsage.textCount} - 1, 0)` };
-        await transaction
-          .update(dailyUsage)
-          .set({ ...countUpdate, updatedAt: now })
-          .where(
-            and(
-              eq(dailyUsage.accountId, run.accountId),
-              eq(dailyUsage.usageDate, run.usageDate),
-            ),
-          );
         recovered += 1;
       }
       return recovered;

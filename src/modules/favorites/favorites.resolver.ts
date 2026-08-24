@@ -7,11 +7,13 @@ import {
   ResolveField,
   Resolver,
 } from '@nestjs/graphql';
+import DataLoader from 'dataloader';
 import { z } from 'zod';
 
+import { decodeCursor, encodeCursor } from '../../common/cursor.js';
 import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
 import type { ProductGraphql } from '../catalog/catalog.mapper.js';
-import { productCursor, toProductGraphql } from '../catalog/catalog.mapper.js';
+import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { FavoritesRepository } from './favorites.repository.js';
 
@@ -36,6 +38,11 @@ type ProductConnection = Readonly<{
 
 @Resolver('Product')
 export class FavoritesResolver {
+  readonly #savedLoaders = new WeakMap<
+    AuthenticatedRequest,
+    DataLoader<string, boolean>
+  >();
+
   public constructor(
     private readonly favorites: FavoritesRepository,
     private readonly catalog: CatalogService,
@@ -45,21 +52,38 @@ export class FavoritesResolver {
   public async savedProducts(
     @Context('req') request: AuthenticatedRequest,
     @Args('first') requestedFirst: number,
+    @Args('after') after: string | null,
   ): Promise<ProductConnection> {
     const first = Math.min(Math.max(requestedFirst, 1), 50);
-    const ids = await this.favorites.list(viewerIdFrom(request), first);
-    const products = (await this.catalog.getProducts(ids)).filter(
-      (product) => product !== null,
+    const records = await this.favorites.list(
+      viewerIdFrom(request),
+      first,
+      decodeCursor(after),
     );
-    const edges = products.map((product) => ({
-      cursor: productCursor(product.id),
-      node: toProductGraphql(product, true),
-    }));
+    const hasNextPage = records.length > first;
+    const page = records.slice(0, first);
+    const products = await this.catalog.getProducts(
+      page.map(({ productId }) => productId),
+    );
+    const edges = page.flatMap((record, index) => {
+      const product = products[index];
+      return product
+        ? [
+            {
+              cursor: encodeCursor({
+                createdAt: record.savedAt.toISOString(),
+                id: record.productId,
+              }),
+              node: toProductGraphql(product, true),
+            },
+          ]
+        : [];
+    });
     return {
       edges,
       pageInfo: {
-        hasNextPage: false,
-        hasPreviousPage: false,
+        hasNextPage,
+        hasPreviousPage: after !== null,
         startCursor: edges.at(0)?.cursor ?? null,
         endCursor: edges.at(-1)?.cursor ?? null,
       },
@@ -79,7 +103,7 @@ export class FavoritesResolver {
     @Context('req') request: AuthenticatedRequest,
     @Parent() product: ProductGraphql,
   ): Promise<boolean> {
-    return this.favorites.has(viewerIdFrom(request), product.id);
+    return this.savedLoader(request).load(product.id);
   }
 
   @Mutation('unsaveProduct')
@@ -127,5 +151,19 @@ export class FavoritesResolver {
       await this.favorites.unsave(viewerIdFrom(request), product.id);
     }
     return { product: toProductGraphql(product, saved), userErrors: [] };
+  };
+
+  private readonly savedLoader = (
+    request: AuthenticatedRequest,
+  ): DataLoader<string, boolean> => {
+    const existing = this.#savedLoaders.get(request);
+    if (existing) return existing;
+    const accountId = viewerIdFrom(request);
+    const loader = new DataLoader<string, boolean>(async (productIds) => {
+      const saved = await this.favorites.hasMany(accountId, productIds);
+      return productIds.map((productId) => saved.has(productId));
+    });
+    this.#savedLoaders.set(request, loader);
+    return loader;
   };
 }

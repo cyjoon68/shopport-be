@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 
 import type { Database } from '../../database/database.module.js';
+import { aiRuns, messageParts, messages } from '../../database/schema.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type { CatalogProduct } from '../catalog/types.js';
 import { AiRepository } from './ai.repository.js';
@@ -25,6 +26,70 @@ const product: CatalogProduct = {
 };
 
 describe('AiRepository', () => {
+  it('starts an owned conversation run without billing state', async () => {
+    const existingMessageLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const conversationLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000010' }]);
+    const existingMessageQuery = {
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({ limit: existingMessageLimit })),
+      })),
+    };
+    const conversationQuery = {
+      from: jest.fn(() => {
+        const query = {
+          innerJoin: jest.fn(),
+          limit: conversationLimit,
+          where: jest.fn(),
+        };
+        query.innerJoin.mockReturnValue(query);
+        query.where.mockReturnValue(query);
+        return query;
+      }),
+    };
+    const runReturning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000011' }]);
+    const runConflict = jest.fn(() => ({ returning: runReturning }));
+    const runValues = jest.fn(() => ({ onConflictDoNothing: runConflict }));
+    const persistedValues = jest.fn(() => Promise.resolve());
+    const insert = jest.fn((table: unknown) => {
+      if (table === aiRuns) return { values: runValues };
+      if (table === messages || table === messageParts) {
+        return { values: persistedValues };
+      }
+      throw new Error('Unexpected insert');
+    });
+    const transaction = {
+      execute: jest.fn(() => Promise.resolve()),
+      insert,
+      select: jest
+        .fn()
+        .mockReturnValueOnce(existingMessageQuery)
+        .mockReturnValueOnce(conversationQuery),
+    };
+    const database = {
+      transaction: (
+        callback: (value: typeof transaction) => Promise<boolean>,
+      ) => callback(transaction),
+    } as unknown as Database;
+    const repository = new AiRepository(database, {} as CatalogService);
+
+    await expect(
+      repository.beginRun({
+        accountId: '0198a122-0c00-7000-8000-000000000012',
+        assetId: null,
+        conversationId: '0198a122-0c00-7000-8000-000000000010',
+        runId: '0198a122-0c00-7000-8000-000000000011',
+        text: '무제한 AI 요청',
+        userMessageId: '0198a122-0c00-7000-8000-000000000013',
+      }),
+    ).resolves.toBe(true);
+  });
+
   it('stores a product snapshot with completed recommendations', async () => {
     const returning = jest
       .fn<() => Promise<Array<{ id: string }>>>()

@@ -27,7 +27,6 @@ const environmentSchema = z
     JWT_ISSUER: z.string().default('shopport'),
     JWT_AUDIENCE: z.string().default('shopport-mobile'),
     KAKAO_NATIVE_APP_KEY: z.string().default('local-kakao-key'),
-    REVENUECAT_WEBHOOK_SECRET: z.string().default('local-revenuecat-secret'),
     COMMAND_CODE_API_KEY: z.string().trim().min(1),
     COMMAND_CODE_MODEL: z.string().trim().min(1).default('gpt-5.4-mini'),
     COMMAND_CODE_MAX_OUTPUT_TOKENS: z.coerce
@@ -102,7 +101,6 @@ const environmentSchema = z
     const unsafeSecrets = [
       ['JWT_SECRET', environment.JWT_SECRET],
       ['KAKAO_NATIVE_APP_KEY', environment.KAKAO_NATIVE_APP_KEY],
-      ['REVENUECAT_WEBHOOK_SECRET', environment.REVENUECAT_WEBHOOK_SECRET],
     ] as const;
     for (const [path, value] of unsafeSecrets) {
       if (

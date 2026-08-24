@@ -81,13 +81,17 @@ export class AssetsService {
         Key: originalKey,
         ContentType: input.contentType,
         ContentLength: input.byteSize,
+        IfNoneMatch: '*',
       }),
       { expiresIn: 10 * 60 },
     );
     return {
       asset: this.toGraphql(asset),
       uploadUrl,
-      headers: [{ name: 'content-type', value: input.contentType }],
+      headers: [
+        { name: 'content-type', value: input.contentType },
+        { name: 'if-none-match', value: '*' },
+      ],
     };
   };
 

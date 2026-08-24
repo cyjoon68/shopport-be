@@ -4,22 +4,12 @@ import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
-import {
-  accounts,
-  authSessions,
-  entitlements,
-  outbox,
-} from '../../database/schema.js';
+import { accounts, authSessions, outbox } from '../../database/schema.js';
 
 export type ViewerRecord = Readonly<{
   id: string;
   displayName: string;
   profileImageUrl: string | null;
-  trialStartedAt: Date;
-  trialEndsAt: Date;
-  entitlementKey: string;
-  productId: string | null;
-  entitlementExpiresAt: Date | null;
 }>;
 
 @Injectable()
@@ -32,14 +22,8 @@ export class ProfileRepository {
         id: accounts.id,
         displayName: accounts.displayName,
         profileImageUrl: accounts.profileImageUrl,
-        trialStartedAt: accounts.trialStartedAt,
-        trialEndsAt: accounts.trialEndsAt,
-        entitlementKey: entitlements.key,
-        productId: entitlements.productId,
-        entitlementExpiresAt: entitlements.expiresAt,
       })
       .from(accounts)
-      .innerJoin(entitlements, eq(accounts.id, entitlements.accountId))
       .where(and(eq(accounts.id, accountId), isNull(accounts.deletedAt)))
       .limit(1);
     return rows.at(0) ?? null;

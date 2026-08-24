@@ -4,8 +4,6 @@ import {
   Controller,
   Get,
   HttpCode,
-  HttpException,
-  HttpStatus,
   Inject,
   Post,
   Query,
@@ -20,7 +18,6 @@ import { z } from 'zod';
 import type { RedisClient } from '../../redis/redis.module.js';
 import { REDIS } from '../../redis/redis.module.js';
 import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
-import { AiAccessError } from './ai.errors.js';
 import { AiService } from './ai.service.js';
 import {
   AiRequestValidationError,
@@ -53,14 +50,6 @@ const pipeResponse = async (
   for await (const chunk of source.body) target.write(Buffer.from(chunk));
   target.end();
 };
-
-const accessError = (error: AiAccessError): HttpException =>
-  new HttpException(
-    { code: error.code, message: error.message },
-    error.code === 'QUOTA_EXCEEDED'
-      ? HttpStatus.TOO_MANY_REQUESTS
-      : HttpStatus.PAYMENT_REQUIRED,
-  );
 
 @Controller('v1/ai/chat')
 export class AiController {
@@ -100,7 +89,6 @@ export class AiController {
           : resumeHttpResponse({ adapter: durability });
       await pipeResponse(result, response);
     } catch (error) {
-      if (error instanceof AiAccessError) throw accessError(error);
       if (
         error instanceof z.ZodError ||
         error instanceof AiRequestValidationError

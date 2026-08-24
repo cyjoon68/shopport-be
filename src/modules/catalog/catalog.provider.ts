@@ -12,6 +12,9 @@ import type {
 
 const catalogIdNamespace = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 const searchBaseUrl = 'https://mcp.aka.page';
+const providerTimeoutMilliseconds = 10_000;
+const maximumResponseBytes = 1024 * 1024;
+const inventoryConcurrency = 4;
 
 const oliveYoungStoreSchema = z.object({
   storeCode: z.string(),
@@ -208,17 +211,24 @@ export class CatalogProvider implements CatalogProviderContract {
     );
     const selected = rankProducts(withinBudget).slice(0, size);
     const location = input.location;
-    const items = location
-      ? providerId === 'daiso'
-        ? rankProducts(
-            await Promise.all(
-              selected.map((product) =>
-                this.withDaisoInventory(product, location),
-              ),
-            ),
-          )
-        : selected
-      : selected;
+    let items: ReadonlyArray<CatalogProduct> = selected;
+    if (location && providerId === 'daiso') {
+      const inventory: Array<CatalogProduct> = [];
+      for (
+        let index = 0;
+        index < selected.length;
+        index += inventoryConcurrency
+      ) {
+        inventory.push(
+          ...(await Promise.all(
+            selected
+              .slice(index, index + inventoryConcurrency)
+              .map((product) => this.withDaisoInventory(product, location)),
+          )),
+        );
+      }
+      items = rankProducts(inventory);
+    }
     items.forEach((product) => this.#products.set(product.id, product));
     return {
       items,
@@ -229,12 +239,6 @@ export class CatalogProvider implements CatalogProviderContract {
 
   public getProduct = (id: string): Promise<CatalogProduct | null> =>
     Promise.resolve(this.#products.get(id) ?? null);
-
-  public resolveOutboundLink = async (id: string): Promise<string> => {
-    const product = await this.getProduct(id);
-    if (!product) throw new Error('Product not found');
-    return product.outboundUrl;
-  };
 
   private readonly searchOliveYoung = async (
     query: string,
@@ -319,10 +323,32 @@ export class CatalogProvider implements CatalogProviderContract {
   private readonly getJson = async (url: URL): Promise<unknown> => {
     const response = await this.#fetchImpl(url, {
       headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(providerTimeoutMilliseconds),
     });
     if (!response.ok) {
       throw new Error(`Catalog request failed: ${String(response.status)}`);
     }
-    return response.json();
+    const declaredLength = response.headers.get('content-length');
+    if (
+      declaredLength !== null &&
+      Number(declaredLength) > maximumResponseBytes
+    ) {
+      throw new Error('Catalog response too large');
+    }
+    if (!response.body) throw new Error('Catalog response has no body');
+    const reader = response.body.getReader();
+    const chunks: Array<Buffer> = [];
+    let size = 0;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > maximumResponseBytes) {
+        await reader.cancel();
+        throw new Error('Catalog response too large');
+      }
+      chunks.push(Buffer.from(chunk.value));
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
   };
 }

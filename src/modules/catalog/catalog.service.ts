@@ -42,9 +42,6 @@ export class CatalogService {
   ): Promise<ReadonlyArray<CatalogProduct | null>> =>
     Promise.all(ids.map((id) => this.getProduct(id)));
 
-  public resolveOutboundLink = async (id: string): Promise<string> =>
-    this.validateOutboundUrl(await this.provider.resolveOutboundLink(id));
-
   private readonly validateProduct = (
     product: CatalogProduct,
   ): CatalogProduct => ({

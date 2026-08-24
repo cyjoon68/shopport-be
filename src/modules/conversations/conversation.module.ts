@@ -15,6 +15,5 @@ import { MessageLoader } from './message.loader.js';
     ConversationResolver,
     MessageLoader,
   ],
-  exports: [ConversationRepository, ConversationService],
 })
 export class ConversationModule {}

@@ -18,15 +18,15 @@ type Viewer {
   displayName: String!
   "An optional profile image."
   profileImageUrl: URL
-  "The current access entitlement."
-  entitlement: Entitlement!
-  "The free-trial start time."
-  trialStartedAt: DateTime!
-  "The free-trial end time."
-  trialEndsAt: DateTime!
+  "Legacy access metadata; all accounts now have unlimited access."
+  entitlement: Entitlement! @deprecated(reason: "AI access is unlimited")
+  "Legacy trial start retained for older mobile clients."
+  trialStartedAt: DateTime! @deprecated(reason: "AI access is unlimited")
+  "Legacy trial end retained for older mobile clients."
+  trialEndsAt: DateTime! @deprecated(reason: "AI access is unlimited")
 }
 
-"AI access granted to a viewer."
+"Legacy AI access metadata retained for older mobile clients."
 type Entitlement {
   "The stable entitlement key."
   key: String!
@@ -45,7 +45,7 @@ type Conversation {
   "The user-facing title."
   title: String!
   "Messages ordered from oldest to newest."
-  messages: [Message!]!
+  messages(first: Int = 50): [Message!]!
   "The creation time."
   createdAt: DateTime!
   "The last update time."
@@ -407,8 +407,9 @@ type Query {
     first: Int = 20
     after: String
   ): ProductConnection!
-  "Returns one product."
+  "Legacy single-product lookup retained for older mobile clients."
   product(id: UUID!): Product
+    @deprecated(reason: "Use products returned by search or savedProducts")
   "Returns products saved by the viewer."
   savedProducts(first: Int = 20, after: String): ProductConnection!
   "Returns one owned image asset."

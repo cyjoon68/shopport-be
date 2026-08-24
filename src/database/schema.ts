@@ -3,7 +3,6 @@ import {
   bigint,
   boolean,
   check,
-  date,
   index,
   integer,
   jsonb,
@@ -29,10 +28,6 @@ export const accounts = pgTable('accounts', {
   status: text('status').notNull().default('active'),
   displayName: text('display_name').notNull(),
   profileImageUrl: text('profile_image_url'),
-  trialStartedAt: timestamp('trial_started_at', {
-    withTimezone: true,
-  }).notNull(),
-  trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }).notNull(),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   ...timestamps,
 });
@@ -68,31 +63,6 @@ export const authSessions = pgTable('auth_sessions', {
   ...timestamps,
 });
 
-export const entitlements = pgTable('entitlements', {
-  accountId: uuid('account_id')
-    .primaryKey()
-    .references(() => accounts.id, { onDelete: 'cascade' }),
-  key: text('key').notNull().default('trial'),
-  productId: text('product_id'),
-  expiresAt: timestamp('expires_at', { withTimezone: true }),
-  sourceEventAt: timestamp('source_event_at', { withTimezone: true }),
-  ...timestamps,
-});
-
-export const dailyUsage = pgTable(
-  'daily_usage',
-  {
-    accountId: uuid('account_id')
-      .notNull()
-      .references(() => accounts.id, { onDelete: 'cascade' }),
-    usageDate: date('usage_date').notNull(),
-    textCount: integer('text_count').notNull().default(0),
-    imageCount: integer('image_count').notNull().default(0),
-    ...timestamps,
-  },
-  (table) => [primaryKey({ columns: [table.accountId, table.usageDate] })],
-);
-
 export const conversations = pgTable('conversations', {
   id: uuid('id').primaryKey(),
   accountId: uuid('account_id')
@@ -113,8 +83,6 @@ export const aiRuns = pgTable(
     conversationId: uuid('conversation_id')
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
-    usageDate: date('usage_date').notNull(),
-    usageKind: text('usage_kind').notNull(),
     status: text('status').notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
@@ -216,16 +184,15 @@ export const outbox = pgTable('outbox', {
   topic: text('topic').notNull(),
   payload: jsonb('payload').notNull(),
   publishedAt: timestamp('published_at', { withTimezone: true }),
+  attemptCount: integer('attempt_count').notNull().default(0),
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  lastError: text('last_error'),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
-
-export const webhookEvents = pgTable('webhook_events', {
-  id: text('id').primaryKey(),
-  source: text('source').notNull(),
-  payloadHash: text('payload_hash').notNull(),
-  processedAt: timestamp('processed_at', { withTimezone: true }).notNull(),
 });
 
 export const archiveManifests = pgTable('archive_manifests', {

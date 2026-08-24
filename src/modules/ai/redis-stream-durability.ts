@@ -137,7 +137,11 @@ export class RedisStreamDurability implements StreamDurability {
               cursor = parsed.offset;
               return { done: false, value: parsed };
             }
-            if (await this.redis.exists(this.#completeKey)) {
+            const [complete, stream] = await Promise.all([
+              this.redis.exists(this.#completeKey),
+              this.redis.exists(this.#streamKey),
+            ]);
+            if (complete || (cursor !== '0-0' && !stream)) {
               return { done: true, value: undefined };
             }
           }

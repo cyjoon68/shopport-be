@@ -76,6 +76,7 @@ const complexityOf = (
         : 0;
       const multiplier = [
         'conversations',
+        'messages',
         'searchProducts',
         'savedProducts',
       ].includes(selection.name.value)

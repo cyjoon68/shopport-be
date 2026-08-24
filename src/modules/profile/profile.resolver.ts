@@ -13,10 +13,10 @@ type ViewerGraphql = Readonly<{
   trialStartedAt: Date;
   trialEndsAt: Date;
   entitlement: Readonly<{
-    key: string;
-    isActive: boolean;
-    productId: string | null;
-    expiresAt: Date | null;
+    key: 'pro';
+    isActive: true;
+    productId: null;
+    expiresAt: null;
   }>;
 }>;
 
@@ -35,25 +35,17 @@ const updateViewerSchema = z.object({
   displayName: z.string().trim().min(1).max(30),
 });
 
-const viewerGraphql = (viewer: ViewerRecord): ViewerGraphql => {
-  const now = new Date();
-  const isPro =
-    viewer.entitlementKey === 'pro' &&
-    (viewer.entitlementExpiresAt === null || viewer.entitlementExpiresAt > now);
-  return {
-    id: viewer.id,
-    displayName: viewer.displayName,
-    profileImageUrl: viewer.profileImageUrl,
-    trialStartedAt: viewer.trialStartedAt,
-    trialEndsAt: viewer.trialEndsAt,
-    entitlement: {
-      key: isPro ? 'pro' : 'trial',
-      isActive: isPro || viewer.trialEndsAt > now,
-      productId: viewer.productId,
-      expiresAt: isPro ? viewer.entitlementExpiresAt : viewer.trialEndsAt,
-    },
-  };
-};
+const viewerGraphql = (viewer: ViewerRecord): ViewerGraphql => ({
+  ...viewer,
+  trialStartedAt: new Date(0),
+  trialEndsAt: new Date('9999-12-31T23:59:59.999Z'),
+  entitlement: {
+    key: 'pro',
+    isActive: true,
+    productId: null,
+    expiresAt: null,
+  },
+});
 
 @Resolver('Viewer')
 export class ProfileResolver {

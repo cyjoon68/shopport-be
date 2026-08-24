@@ -7,11 +7,12 @@ NestJS modular monolith for Shopport. The repository builds three deployment uni
 ```bash
 corepack enable
 pnpm install
+cp .env.example .env
 pnpm db:migrate
 pnpm dev
 ```
 
-Required services are provided by the parent workspace Docker Compose stack. Copy `.env.example` to `.env` before starting.
+Required services are provided by the parent workspace Docker Compose stack. Backend commands read this repository's `.env`.
 
 ## Commands
 
