@@ -418,7 +418,7 @@ describe('Shopport API vertical flow', () => {
     if (!assistantMessageId) throw new Error('Expected assistant message ID');
 
     const replay = await request(baseUrl)
-      .get(`/v1/ai/chat?runId=${completedRunId}&offset=0-0`)
+      .get(`/v1/ai/chat?runId=${completedRunId}&offset=0`)
       .set('authorization', `Bearer ${accessToken}`)
       .expect(200);
     expect(replay.text).toContain('RUN_FINISHED');
