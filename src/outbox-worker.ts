@@ -24,7 +24,7 @@ const run = async (
       listenerUnavailable = false;
     } catch (error) {
       listening = false;
-      if (!listenerUnavailable) report('Outbox listener failed', error);
+      if (!listenerUnavailable) report('outbox-listener', error);
       listenerUnavailable = true;
     }
     try {
@@ -39,7 +39,7 @@ const run = async (
           await wakeup.wait(waitMilliseconds, signal);
           continue;
         } catch (error) {
-          if (!listenerUnavailable) report('Outbox listener failed', error);
+          if (!listenerUnavailable) report('outbox-listener', error);
           listenerUnavailable = true;
         }
       }
@@ -48,7 +48,7 @@ const run = async (
         signal,
       );
     } catch (error) {
-      if (!processorUnavailable) report('Outbox processor failed', error);
+      if (!processorUnavailable) report('outbox-processor', error);
       processorUnavailable = true;
       await delay(degradedCadenceMilliseconds, signal);
     }
@@ -76,6 +76,6 @@ const bootstrap = async (): Promise<void> => {
 };
 
 bootstrap().catch((error: unknown) => {
-  report('Outbox worker failed', error);
+  report('outbox-worker', error);
   process.exitCode = 1;
 });
