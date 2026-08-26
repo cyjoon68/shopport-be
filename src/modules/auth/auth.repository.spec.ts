@@ -1,5 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { ConflictException } from '@nestjs/common';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../../database/database.module.js';
 import { AuthRepository } from './auth.repository.js';
@@ -65,30 +67,29 @@ describe('AuthRepository refresh replay handling', () => {
 });
 
 describe('AuthRepository session revocation', () => {
+  const sessionId = '0198a122-0c00-7000-8000-000000000002';
+  const recursiveLineageSql =
+    'with recursive lineage as ( select "auth_sessions"."id" as id, "auth_sessions"."replaced_by_session_id" as next_id from "auth_sessions" where "auth_sessions"."id" = $1 union all select child.id, child.replaced_by_session_id from "auth_sessions" child inner join lineage parent on child.id = parent.next_id ) update "auth_sessions" set revoked_at = coalesce("auth_sessions"."revoked_at", now()), updated_at = now() where "auth_sessions"."id" in (select id from lineage)';
+
   const createRepository = (
-    revokedAt: Date | null,
     found = true,
   ): Readonly<{
+    executedInTransaction: boolean[];
     repository: AuthRepository;
-    transaction: Readonly<{ execute: () => Promise<void> }>;
+    statements: SQL[];
   }> => {
-    const locked = jest.fn(() =>
-      Promise.resolve(
-        found
-          ? [
-              {
-                id: '0198a122-0c00-7000-8000-000000000002',
-                replacedBySessionId: revokedAt
-                  ? '0198a122-0c00-7000-8000-000000000003'
-                  : null,
-                revokedAt,
-              },
-            ]
-          : [],
-      ),
-    );
+    const executedInTransaction: boolean[] = [];
+    const statements: SQL[] = [];
+    let transactionOpen = false;
+    const locked = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue(found ? [{ id: sessionId }] : []);
     const transaction = {
-      execute: jest.fn(() => Promise.resolve()),
+      execute: (statement: SQL): Promise<void> => {
+        statements.push(statement);
+        executedInTransaction.push(transactionOpen);
+        return Promise.resolve();
+      },
       select: jest.fn(() => ({
         from: jest.fn(() => ({
           where: jest.fn(() => ({
@@ -98,55 +99,53 @@ describe('AuthRepository session revocation', () => {
       })),
     };
     const database = {
-      transaction: (
+      transaction: async (
         callback: (value: typeof transaction) => Promise<unknown>,
-      ): Promise<unknown> => callback(transaction),
-      update: jest.fn(() => ({
-        set: jest.fn(() => ({ where: jest.fn(() => Promise.resolve()) })),
-      })),
+      ): Promise<unknown> => {
+        transactionOpen = true;
+        try {
+          return await callback(transaction);
+        } finally {
+          transactionOpen = false;
+        }
+      },
     } as unknown as Database;
-    return { repository: new AuthRepository(database), transaction };
+    return {
+      executedInTransaction,
+      repository: new AuthRepository(database),
+      statements,
+    };
   };
 
-  it('revokes a replaced parent and its replacement descendants atomically', async () => {
-    const { repository, transaction } = createRepository(
-      new Date('2026-08-27T00:00:00.000Z'),
-    );
+  it.each(['already-replaced', 'active'])(
+    'executes recursive lineage SQL inside the transaction for an %s parent',
+    async () => {
+      const { executedInTransaction, repository, statements } =
+        createRepository();
 
-    await expect(
-      repository.revokeSession(
-        '0198a122-0c00-7000-8000-000000000002',
-        'stored-hash',
-      ),
-    ).resolves.toBe(true);
+      await expect(
+        repository.revokeSession(sessionId, 'stored-hash'),
+      ).resolves.toBe(true);
 
-    expect(transaction.execute).toHaveBeenCalledTimes(1);
-  });
+      const statement = statements.at(0);
+      if (!statement) throw new Error('Expected recursive lineage statement');
+      const query = new PgDialect().sqlToQuery(statement);
 
-  it('revokes an active parent and any replacement descendants atomically', async () => {
-    const { repository, transaction } = createRepository(null);
-
-    await expect(
-      repository.revokeSession(
-        '0198a122-0c00-7000-8000-000000000002',
-        'stored-hash',
-      ),
-    ).resolves.toBe(true);
-
-    expect(transaction.execute).toHaveBeenCalledTimes(1);
-  });
+      expect(executedInTransaction).toEqual([true]);
+      expect(statements).toHaveLength(1);
+      expect(query.sql.replace(/\s+/gu, ' ').trim()).toBe(recursiveLineageSql);
+      expect(query.params).toEqual([sessionId]);
+    },
+  );
 
   it('returns false without revocation when the exact session hash is absent', async () => {
-    const { repository, transaction } = createRepository(null, false);
+    const { repository, statements } = createRepository(false);
 
     await expect(
-      repository.revokeSession(
-        '0198a122-0c00-7000-8000-000000000002',
-        'wrong-hash',
-      ),
+      repository.revokeSession(sessionId, 'wrong-hash'),
     ).resolves.toBe(false);
 
-    expect(transaction.execute).not.toHaveBeenCalled();
+    expect(statements).toEqual([]);
   });
 });
 

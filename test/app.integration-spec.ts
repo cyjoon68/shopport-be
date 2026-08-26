@@ -211,6 +211,11 @@ const integrationSubject = 'integration-kakao';
 const secondIntegrationSubject = 'integration-kakao-second';
 const deletionPendingIntegrationSubject = 'integration-kakao-deletion-pending';
 
+type AuthBarrierWait = Readonly<{
+  clear: () => void;
+  promise: Promise<void>;
+}>;
+
 describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
@@ -232,6 +237,29 @@ describe('Shopport API vertical flow', () => {
   let poolInitialized = false;
   let workerModuleInitialized = false;
   let appInitialized = false;
+
+  const waitForAuthBarrier = (
+    expectedMessage: string,
+    timeoutMilliseconds = 5_000,
+  ): AuthBarrierWait => {
+    let clear = (): void => undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        clear();
+        reject(new Error(`Timed out waiting for ${expectedMessage}`));
+      }, timeoutMilliseconds);
+      clear = (): void => {
+        clearTimeout(timeout);
+        resolveAuthBarrier = undefined;
+      };
+      resolveAuthBarrier = (message): void => {
+        if (message !== expectedMessage) return;
+        clear();
+        resolve();
+      };
+    });
+    return { clear, promise };
+  };
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer('postgres:16.8-alpine')
@@ -1055,6 +1083,7 @@ describe('Shopport API vertical flow', () => {
       }>
     > => {
       const blocker = await pool.connect();
+      let barrier: AuthBarrierWait | undefined;
       try {
         await pool.query(`
           create or replace function auth_session_refresh_barrier()
@@ -1072,16 +1101,12 @@ describe('Shopport API vertical flow', () => {
           execute function auth_session_refresh_barrier()
         `);
         await blocker.query('select pg_advisory_lock(73001)');
-        const barrierReached = new Promise<void>((resolve) => {
-          resolveAuthBarrier = (message): void => {
-            if (message === 'refresh-lock-held') resolve();
-          };
-        });
+        barrier = waitForAuthBarrier('refresh-lock-held');
         const refreshRequest = request(baseUrl)
           .post('/v1/auth/refresh')
           .send({ refreshToken: refreshWinnerLogin.refreshToken })
           .then((response) => response);
-        await barrierReached;
+        await barrier.promise;
         const logoutRequest = request(baseUrl)
           .post('/v1/auth/logout')
           .send({ refreshToken: refreshWinnerLogin.refreshToken })
@@ -1097,13 +1122,16 @@ describe('Shopport API vertical flow', () => {
           tokens: loginSchema.parse(refreshResponse.body),
         };
       } finally {
-        resolveAuthBarrier = undefined;
-        await blocker.query('select pg_advisory_unlock(73001)');
-        blocker.release();
-        await pool.query(`
-          drop trigger if exists auth_session_refresh_barrier on auth_sessions;
-          drop function if exists auth_session_refresh_barrier()
-        `);
+        barrier?.clear();
+        try {
+          await blocker.query('select pg_advisory_unlock(73001)');
+        } finally {
+          blocker.release();
+          await pool.query(`
+            drop trigger if exists auth_session_refresh_barrier on auth_sessions;
+            drop function if exists auth_session_refresh_barrier()
+          `);
+        }
       }
     })();
 
@@ -1111,6 +1139,7 @@ describe('Shopport API vertical flow', () => {
       Readonly<{ logoutStatus: number; refreshStatus: number }>
     > => {
       const blocker = await pool.connect();
+      let barrier: AuthBarrierWait | undefined;
       try {
         await pool.query(`
           create or replace function auth_session_logout_barrier()
@@ -1132,16 +1161,12 @@ describe('Shopport API vertical flow', () => {
           execute function auth_session_logout_barrier()
         `);
         await blocker.query('select pg_advisory_lock(73002)');
-        const barrierReached = new Promise<void>((resolve) => {
-          resolveAuthBarrier = (message): void => {
-            if (message === 'logout-lock-held') resolve();
-          };
-        });
+        barrier = waitForAuthBarrier('logout-lock-held');
         const logoutRequest = request(baseUrl)
           .post('/v1/auth/logout')
           .send({ refreshToken: logoutWinnerLogin.refreshToken })
           .then((response) => response);
-        await barrierReached;
+        await barrier.promise;
         const refreshRequest = request(baseUrl)
           .post('/v1/auth/refresh')
           .send({ refreshToken: logoutWinnerLogin.refreshToken })
@@ -1156,13 +1181,16 @@ describe('Shopport API vertical flow', () => {
           refreshStatus: refreshResponse.status,
         };
       } finally {
-        resolveAuthBarrier = undefined;
-        await blocker.query('select pg_advisory_unlock(73002)');
-        blocker.release();
-        await pool.query(`
-          drop trigger if exists auth_session_logout_barrier on auth_sessions;
-          drop function if exists auth_session_logout_barrier()
-        `);
+        barrier?.clear();
+        try {
+          await blocker.query('select pg_advisory_unlock(73002)');
+        } finally {
+          blocker.release();
+          await pool.query(`
+            drop trigger if exists auth_session_logout_barrier on auth_sessions;
+            drop function if exists auth_session_logout_barrier()
+          `);
+        }
       }
     })();
 
@@ -1170,6 +1198,35 @@ describe('Shopport API vertical flow', () => {
     expect(refreshWins.logoutStatus).toBe(204);
     expect(logoutWins.logoutStatus).toBe(204);
     expect(logoutWins.refreshStatus).toBe(401);
+
+    const [refreshWinnerChildId] = refreshWins.tokens.refreshToken.split('.');
+    if (!refreshWinnerChildId) {
+      throw new Error('Expected refresh winner child session ID');
+    }
+    const racedSessions = await pool.query<{
+      id: string;
+      revoked_at: Date | null;
+    }>(
+      `select id, revoked_at
+       from auth_sessions
+       where id = any($1::uuid[])`,
+      [
+        [
+          refreshWinnerSessionId,
+          refreshWinnerChildId,
+          logoutWinnerSessionId,
+          unrelatedSessionId,
+        ],
+      ],
+    );
+    const racedSessionStates = new Map(
+      racedSessions.rows.map(({ id, revoked_at }) => [id, revoked_at]),
+    );
+    expect(racedSessionStates.size).toBe(4);
+    expect(racedSessionStates.get(refreshWinnerSessionId)).toBeInstanceOf(Date);
+    expect(racedSessionStates.get(refreshWinnerChildId)).toBeInstanceOf(Date);
+    expect(racedSessionStates.get(logoutWinnerSessionId)).toBeInstanceOf(Date);
+    expect(racedSessionStates.get(unrelatedSessionId)).toBeNull();
 
     const rejectedAccessTokens = [
       refreshWinnerLogin.accessToken,
@@ -1206,12 +1263,16 @@ describe('Shopport API vertical flow', () => {
       .expect(({ text }) => {
         expect(text).not.toContain('UNAUTHENTICATED');
       });
-    const unrelatedSession = await pool.query<{ revoked_at: Date | null }>(
-      'select revoked_at from auth_sessions where id = $1',
-      [unrelatedSessionId],
-    );
-    expect(unrelatedSession.rows.at(0)?.revoked_at).toBeNull();
   }, 30_000);
+
+  it('bounds auth barrier notice waits', async () => {
+    const barrier = waitForAuthBarrier('missing-notice', 0);
+
+    await expect(barrier.promise).rejects.toThrow(
+      'Timed out waiting for missing-notice',
+    );
+    expect(resolveAuthBarrier).toBeUndefined();
+  });
 
   it('revokes the access session on logout', async () => {
     const logoutLogin = loginSchema.parse(
