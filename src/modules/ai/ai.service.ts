@@ -2,6 +2,8 @@ import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { StreamChunk } from '@tanstack/ai';
 
 import { AssetsService } from '../assets/assets.service.js';
+import { toProductGraphql } from '../catalog/catalog.mapper.js';
+import { CatalogService } from '../catalog/catalog.service.js';
 import { AiRepository } from './ai.repository.js';
 import { parseAiRequest, storageRunIdFor } from './ai-request.js';
 import type { AiStreamAdapter } from './ai-stream.adapter.js';
@@ -17,6 +19,7 @@ export class AiService {
     private readonly repository: AiRepository,
     private readonly tools: AiTools,
     private readonly assets: AssetsService,
+    private readonly catalog: CatalogService,
     @Inject(AI_STREAM_ADAPTER) private readonly stream: AiStreamAdapter,
   ) {}
 
@@ -34,7 +37,7 @@ export class AiService {
       assetId: request.assetId,
     });
     if (!began) throw new ConflictException('Run already exists');
-    await this.repository.heartbeatRun(request.storageRunId);
+    await this.repository.renewRunLease(request.storageRunId);
     try {
       const providerIds = request.providerIdsSpecified
         ? request.providerIds
@@ -75,22 +78,39 @@ export class AiService {
         tools,
         {
           onComplete: async (result): Promise<void> => {
+            const snapshots = new Map<
+              string,
+              ReturnType<typeof toProductGraphql>
+            >();
+            const products = await this.catalog.getProducts(
+              result.productRecommendations.map(({ productId }) => productId),
+            );
+            for (const product of products) {
+              if (product) snapshots.set(product.id, toProductGraphql(product));
+            }
             await Promise.all([
-              this.repository.completeRun(
-                request.storageRunId,
-                request.threadId,
-                result.messageId,
-                result.text,
-                result.productRecommendations,
-                result.askUser,
+              this.repository.completeRun({
+                runId: request.storageRunId,
+                conversationId: request.threadId,
+                messageId: result.messageId,
+                text: result.text,
+                productRecommendations: result.productRecommendations.map(
+                  (recommendation) => ({
+                    ...recommendation,
+                    productSnapshot:
+                      snapshots.get(recommendation.productId) ?? null,
+                  }),
+                ),
+                askUser: result.askUser,
                 providerIds,
-              ),
+              }),
               titleUpdate,
             ]);
           },
           onFailure: () => this.repository.failRun(request.storageRunId),
           isCancelled: () =>
             this.repository.isRunCancelled(request.storageRunId),
+          renewLease: () => this.repository.renewRunLease(request.storageRunId),
         },
       );
     } catch (error) {

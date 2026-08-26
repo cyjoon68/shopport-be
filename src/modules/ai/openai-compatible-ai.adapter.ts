@@ -25,14 +25,10 @@ import { z } from 'zod';
 import type { Environment } from '../../config/environment.js';
 import type { AiProviderId } from './ai-request.js';
 import type {
-  AiProductRecommendation,
   AiStreamAdapter,
   AiStreamInput,
   AiStreamLifecycle,
-  AiStreamResult,
-  AskUser,
 } from './ai-stream.adapter.js';
-import { clarificationDimensions } from './ai-stream.adapter.js';
 import { toAiProductResult } from './ai-tool-result.js';
 import type { AiToolSession } from './ai-tools.js';
 import type { ShoppingDeepModeAssessment } from './shopping-deep-mode.js';
@@ -41,15 +37,23 @@ import {
   shoppingAmbiguityThreshold,
   shoppingRequestKinds,
 } from './shopping-deep-mode.js';
+import {
+  type AiProductRecommendation,
+  type AiStreamResult,
+  type AskUser,
+  clarificationDimensions,
+} from './types.js';
 
 export const AI_PROVIDER_FETCH = Symbol('AI_PROVIDER_FETCH');
 
 const providerBaseUrl = 'https://api.commandcode.ai/provider/v1';
 const overallTimeoutMilliseconds = 55_000;
 const providerTimeoutMilliseconds = 45_000;
+const leaseRenewalIntervalMilliseconds = 15_000;
 const timeoutReason = 'shopport:ai-timeout';
 const streamClosedReason = 'shopport:stream-closed';
 const cancellationCheckFailedReason = 'shopport:cancellation-check-failed';
+const leaseRenewalFailedReason = 'shopport:lease-renewal-failed';
 const clarificationSkipMessage = '질문을 건너뛰고 현재 정보로 계속 진행해줘.';
 const conversationTitleLength = 24;
 const conversationTitlePrompt =
@@ -235,6 +239,8 @@ type TerminalState = Readonly<{
   cancel: () => void;
 }>;
 
+type LifecycleMiddleware = ChatMiddleware & Readonly<{ stop: () => void }>;
+
 const createTerminalState = (lifecycle: AiStreamLifecycle): TerminalState => {
   let status: TerminalStatus = 'pending';
   return {
@@ -269,14 +275,17 @@ const createLifecycleMiddleware = (
   deepModeState: DeepModeState,
   askUserState: () => AskUser | null,
   assistantMessageId: string,
-): ChatMiddleware => {
+): LifecycleMiddleware => {
   let cancellationInterval: NodeJS.Timeout | undefined;
+  let leaseRenewalInterval: NodeJS.Timeout | undefined;
   let timeout: NodeJS.Timeout | undefined;
   let pollPending = false;
+  let renewalPending = false;
   let stopped = false;
   const stop = (): void => {
     stopped = true;
     if (cancellationInterval) clearInterval(cancellationInterval);
+    if (leaseRenewalInterval) clearInterval(leaseRenewalInterval);
     if (timeout) clearTimeout(timeout);
   };
   const pollCancellation = (): void => {
@@ -298,8 +307,23 @@ const createLifecycleMiddleware = (
         pollPending = false;
       });
   };
+  const renewLease = (): void => {
+    if (renewalPending || stopped || abortController.signal.aborted) return;
+    renewalPending = true;
+    void lifecycle
+      .renewLease()
+      .catch(() => {
+        if (!stopped && !abortController.signal.aborted) {
+          abortController.abort(leaseRenewalFailedReason);
+        }
+      })
+      .finally(() => {
+        renewalPending = false;
+      });
+  };
   return {
     name: 'shopport-ai-lifecycle',
+    stop,
     onConfig: (_context, config): Partial<ChatMiddlewareConfig> => {
       const modelOptions = { ...config.modelOptions };
       delete modelOptions.tool_choice;
@@ -328,6 +352,11 @@ const createLifecycleMiddleware = (
     setup: (): void => {
       cancellationInterval = setInterval(pollCancellation, 250);
       cancellationInterval.unref();
+      leaseRenewalInterval = setInterval(
+        renewLease,
+        leaseRenewalIntervalMilliseconds,
+      );
+      leaseRenewalInterval.unref();
       timeout = setTimeout(() => {
         if (!abortController.signal.aborted) {
           abortController.abort(timeoutReason);
@@ -427,6 +456,7 @@ const createPublicStream = (
   abortController: AbortController,
   terminal: TerminalState,
   assistantMessageId: string,
+  stop: () => void,
 ): AsyncIterable<StreamChunk> => {
   const iterator = source[Symbol.asyncIterator]();
   let sourceDone = false;
@@ -450,11 +480,13 @@ const createPublicStream = (
             result = await iterator.next();
           } catch {
             sourceDone = true;
+            stop();
             await terminal.fail().catch(() => undefined);
             return nextTerminal();
           }
           if (result.done) {
             sourceDone = true;
+            stop();
             if (terminal.status() === 'pending') {
               await terminal.fail().catch(() => undefined);
             }
@@ -494,6 +526,7 @@ const createPublicStream = (
       },
       return: async (): Promise<IteratorResult<StreamChunk>> => {
         if (!sourceDone) {
+          stop();
           abortController.abort(streamClosedReason);
           await iterator.return?.();
           sourceDone = true;
@@ -569,6 +602,15 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
     const terminal = createTerminalState(lifecycle);
     const adapter = this.createTextAdapter();
     const providerPrompt = providerConstraintPrompt(input.providerIds ?? []);
+    const lifecycleMiddleware = createLifecycleMiddleware(
+      abortController,
+      lifecycle,
+      terminal,
+      recommendationState,
+      deepModeState,
+      () => askUser,
+      assistantMessageId,
+    );
     const source = chat({
       adapter,
       messages: this.modelMessages(input),
@@ -583,17 +625,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       agentLoopStrategy: maxIterations(5),
       threadId: input.threadId,
       runId: input.runId,
-      middleware: [
-        createLifecycleMiddleware(
-          abortController,
-          lifecycle,
-          terminal,
-          recommendationState,
-          deepModeState,
-          () => askUser,
-          assistantMessageId,
-        ),
-      ],
+      middleware: [lifecycleMiddleware],
       debug: false,
     });
     return createPublicStream(
@@ -602,6 +634,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
       abortController,
       terminal,
       assistantMessageId,
+      lifecycleMiddleware.stop,
     );
   };
 

@@ -13,14 +13,8 @@ const askUser = {
   allowFreeText: true,
 } as const;
 
-type RepositoryConstructor = new (
-  ...args: ReadonlyArray<unknown>
-) => AiRepository;
-
 const repositoryFor = (database: Database): AiRepository =>
-  new (AiRepository as unknown as RepositoryConstructor)(database, {
-    getProducts: (): Promise<Array<never>> => Promise.resolve([]),
-  });
+  new AiRepository(database);
 
 describe('AiRepository provider filters', () => {
   it('stores selected providers only in the internal clarification payload', async () => {
@@ -49,15 +43,15 @@ describe('AiRepository provider filters', () => {
       ): Promise<void> => callback(transaction),
     } as unknown as Database;
 
-    await repositoryFor(database).completeRun(
-      '0198a122-0c00-7000-8000-000000000002',
-      '0198a122-0c00-7000-8000-000000000003',
-      '0198a122-0c00-7000-8000-000000000004',
-      '',
-      [],
+    await repositoryFor(database).completeRun({
+      runId: '0198a122-0c00-7000-8000-000000000002',
+      conversationId: '0198a122-0c00-7000-8000-000000000003',
+      messageId: '0198a122-0c00-7000-8000-000000000004',
+      text: '',
+      productRecommendations: [],
       askUser,
-      ['oliveyoung'],
-    );
+      providerIds: ['oliveyoung'],
+    });
 
     expect(values.mock.calls.at(-1)?.[0]).toEqual([
       expect.objectContaining({

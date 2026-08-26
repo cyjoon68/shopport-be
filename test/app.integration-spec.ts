@@ -264,6 +264,47 @@ describe('Shopport API vertical flow', () => {
     return { clear, promise };
   };
 
+  const createAiOwner = async (): Promise<
+    Readonly<{
+      accessToken: string;
+      accountId: string;
+      conversationId: string;
+    }>
+  > => {
+    const loginResponse = await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'task-five-owner',
+      })
+      .expect(200);
+    const ownerAccessToken = loginSchema.parse(loginResponse.body).accessToken;
+    const conversationResponse = await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', `Bearer ${ownerAccessToken}`)
+      .send({
+        query:
+          'mutation Create($input: CreateConversationInput!) { createConversation(input: $input) { conversation { id } userErrors { code } } }',
+        variables: { input: { title: 'AI 실행 복구' } },
+      })
+      .expect(200);
+    const ownerConversationId = conversationSchema.parse(
+      conversationResponse.body,
+    ).data.createConversation.conversation.id;
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected Kakao account');
+    return {
+      accessToken: ownerAccessToken,
+      accountId,
+      conversationId: ownerConversationId,
+    };
+  };
+
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer('postgres:16.8-alpine')
       .withCommand([
@@ -787,14 +828,51 @@ describe('Shopport API vertical flow', () => {
     expect(successors.rows.at(0)?.count).toBe('1');
   }, 30_000);
 
-  it('recovers only stale reserved runs once', async () => {
-    const account = await pool.query<{ account_id: string }>(
-      `select account_id
-       from auth_identities
-       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
+  it('terminates producerless cancellation replay', async () => {
+    const owner = await createAiOwner();
+    const runId = uuidv7();
+    const now = new Date();
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $4)`,
+      [
+        runId,
+        owner.accountId,
+        owner.conversationId,
+        now,
+        new Date(now.getTime() + 60_000),
+      ],
     );
-    const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Kakao account');
+
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .send({ threadId: owner.conversationId, runId })
+      .expect(204);
+    const replay = await request(baseUrl)
+      .get(`/v1/ai/chat?runId=${runId}&offset=0`)
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    const cancelled = await pool.query<{
+      status: string;
+      completed_at: Date | null;
+      stream_closed_at: Date | null;
+    }>(
+      `select status, completed_at, stream_closed_at
+       from ai_runs
+       where id = $1`,
+      [runId],
+    );
+
+    expect(replay.text.trim()).toBe('');
+    expect(cancelled.rows.at(0)?.status).toBe('cancelled');
+    expect(cancelled.rows.at(0)?.completed_at).toBeInstanceOf(Date);
+    expect(cancelled.rows.at(0)?.stream_closed_at).toBeInstanceOf(Date);
+  }, 30_000);
+
+  it('recovers stale reserved runs once', async () => {
+    const owner = await createAiOwner();
     const now = new Date();
     const overdue = new Date(now.getTime() - 180_000);
     const future = new Date(now.getTime() + 180_000);
@@ -817,8 +895,8 @@ describe('Shopport API vertical flow', () => {
         freshRunId,
         completedRunId,
         cancelledRunId,
-        accountId,
-        conversationId,
+        owner.accountId,
+        owner.conversationId,
         overdue,
         future,
       ],

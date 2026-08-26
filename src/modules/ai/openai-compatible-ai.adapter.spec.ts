@@ -5,12 +5,13 @@ import { EventType } from '@tanstack/ai';
 
 import type { Environment } from '../../config/environment.js';
 import type { CatalogProduct } from '../catalog/types.js';
-import type { AiStreamResult } from './ai-stream.adapter.js';
+import type { AiStreamLifecycle } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import {
   askUserSchema,
   OpenAiCompatibleAiStreamAdapter,
 } from './openai-compatible-ai.adapter.js';
+import type { AiStreamResult } from './types.js';
 
 const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',
@@ -110,6 +111,68 @@ const requiredCall = (
   const call = calls.at(index);
   if (!call) throw new Error('Command Code request was not made');
   return call;
+};
+
+const deferred = <T>(): Readonly<{
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+}> => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const testConfig = (): ConfigService<Environment, true> =>
+  new ConfigService<Environment, true>({
+    PROVIDER_API_KEY: 'key',
+    PROVIDER_MODEL: 'gpt-5.4-mini',
+    PROVIDER_MAX_OUTPUT_TOKENS: 512,
+  });
+
+const emptyTools: AiToolSession = {
+  searchProducts: () =>
+    Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+  getProduct: () => Promise.resolve(null),
+};
+
+const pendingStream = (
+  lifecycle: AiStreamLifecycle,
+): Readonly<{
+  iterator: AsyncIterator<StreamChunk>;
+  providerSignal: () => AbortSignal | undefined;
+}> => {
+  let signal: AbortSignal | undefined;
+  const providerFetch = jest.fn<typeof fetch>((input, init) => {
+    const requestSignal =
+      input instanceof Request ? input.signal : init?.signal;
+    signal = requestSignal ?? undefined;
+    return new Promise<Response>((_resolve, reject) => {
+      requestSignal?.addEventListener(
+        'abort',
+        () => {
+          reject(new Error('provider aborted'));
+        },
+        { once: true },
+      );
+    });
+  });
+  return {
+    iterator: new OpenAiCompatibleAiStreamAdapter(testConfig(), providerFetch)
+      .createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        lifecycle,
+      )
+      [Symbol.asyncIterator](),
+    providerSignal: () => signal,
+  };
 };
 
 describe('OpenAiCompatibleAiStreamAdapter', () => {
@@ -262,6 +325,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     )) {
       chunks.push(chunk);
@@ -360,6 +424,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure,
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -424,6 +489,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -513,6 +579,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -595,6 +662,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -658,6 +726,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         onComplete: () => Promise.resolve(),
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -787,6 +856,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure,
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     )) {
       chunks.push(chunk);
@@ -985,6 +1055,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure: () => Promise.resolve(),
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     ))
       void _chunk;
@@ -1126,6 +1197,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         },
         onFailure,
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     )) {
       chunks.push(chunk);
@@ -1190,6 +1262,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         onComplete: () => Promise.resolve(),
         onFailure,
         isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
       },
     )) {
       chunks.push(chunk);
@@ -1204,5 +1277,229 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
       }),
     );
     expect(JSON.stringify(chunks)).not.toContain('upstream detail');
+  });
+
+  describe('renewable run lifecycle', () => {
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    it('does not overlap lease renewals', async () => {
+      jest.useFakeTimers();
+      const renewal = deferred<undefined>();
+      const renewLease = jest
+        .fn<() => Promise<void>>()
+        .mockReturnValue(renewal.promise);
+      let cancelled = false;
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(cancelled),
+        renewLease,
+      });
+
+      const pendingNext = stream.iterator.next();
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(renewLease).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(renewLease).toHaveBeenCalledTimes(1);
+
+      renewal.resolve(undefined);
+      cancelled = true;
+      await jest.advanceTimersByTimeAsync(250);
+      await pendingNext;
+      await expect(stream.iterator.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(stream.providerSignal()?.aborted).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('renews the lease every fifteen seconds', async () => {
+      jest.useFakeTimers();
+      const renewLease = jest.fn<() => Promise<void>>().mockResolvedValue();
+      let cancelled = false;
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(cancelled),
+        renewLease,
+      });
+      const pendingNext = stream.iterator.next();
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(renewLease).toHaveBeenCalledTimes(2);
+
+      cancelled = true;
+      await jest.advanceTimersByTimeAsync(250);
+      await pendingNext;
+      await expect(stream.iterator.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('aborts provider work and emits only RUN_ERROR when renewal fails', async () => {
+      jest.useFakeTimers();
+      const renewLease = jest
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error('lease lost'));
+      const onFailure = jest.fn(() => Promise.resolve());
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure,
+        isCancelled: () => Promise.resolve(false),
+        renewLease,
+      });
+      const chunks: Array<StreamChunk> = [];
+      const pendingNext = stream.iterator.next();
+
+      await jest.advanceTimersByTimeAsync(15_000);
+      const started = await pendingNext;
+      if (!started.done) chunks.push(started.value);
+      for (;;) {
+        const result = await stream.iterator.next();
+        if (result.done) break;
+        chunks.push(result.value);
+      }
+
+      expect(stream.providerSignal()?.aborted).toBe(true);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+      expect(chunks.some(({ type }) => type === EventType.RUN_FINISHED)).toBe(
+        false,
+      );
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('reports completion persistence rejection as RUN_ERROR', async () => {
+      jest.useFakeTimers();
+      const onFailure = jest.fn(() => Promise.resolve());
+      const chunks: Array<StreamChunk> = [];
+
+      for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            streamResponse([
+              completionChunk(
+                'chatcmpl-answer',
+                { role: 'assistant', content: '완료 응답' },
+                null,
+              ),
+              completionChunk('chatcmpl-answer', {}, 'stop'),
+            ]),
+          ),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.reject(new Error('lease lost')),
+          onFailure,
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      )) {
+        chunks.push(chunk);
+      }
+
+      expect(onFailure).toHaveBeenCalledTimes(1);
+      expect(chunks.some(({ type }) => type === EventType.RUN_FINISHED)).toBe(
+        false,
+      );
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('clears lifecycle timers after a provider error', async () => {
+      jest.useFakeTimers();
+      const chunks: Array<StreamChunk> = [];
+      const stream = new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(null, { status: 500 })),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.resolve(),
+          onFailure: () => Promise.resolve(),
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      );
+      const consume = (async (): Promise<void> => {
+        for await (const chunk of stream) chunks.push(chunk);
+      })();
+
+      await jest.advanceTimersByTimeAsync(46_000);
+      await consume;
+
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('clears lifecycle timers after a successful finish', async () => {
+      jest.useFakeTimers();
+      const chunks: Array<StreamChunk> = [];
+
+      for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            streamResponse([
+              completionChunk(
+                'chatcmpl-answer',
+                { role: 'assistant', content: '완료 응답' },
+                null,
+              ),
+              completionChunk('chatcmpl-answer', {}, 'stop'),
+            ]),
+          ),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.resolve(),
+          onFailure: () => Promise.resolve(),
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      )) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_FINISHED }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 });
