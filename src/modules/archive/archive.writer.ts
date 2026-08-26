@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, eq, inArray, lt } from 'drizzle-orm';
+import { asc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
@@ -34,6 +34,10 @@ export class ArchiveWriter {
 
   public archive = (): Promise<boolean> =>
     this.database.transaction(async (transaction) => {
+      const lock = await transaction.execute<{ locked: boolean }>(
+        sql`select pg_try_advisory_xact_lock(hashtextextended('shopport.archive', 0)) as locked`,
+      );
+      if (!lock.rows.at(0)?.locked) return false;
       const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1_000);
       const pending = await transaction
         .select({
@@ -49,7 +53,7 @@ export class ArchiveWriter {
         .where(lt(messages.createdAt, cutoff))
         .orderBy(asc(messages.createdAt), asc(messages.id))
         .limit(500)
-        .for('update', { skipLocked: true });
+        .for('update', { of: messages, skipLocked: true });
       if (pending.length === 0) return false;
       const grouped = new Map<string, PendingMessage[]>();
       for (const message of pending) {

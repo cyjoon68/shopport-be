@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { AssetGraphql } from '../assets/assets.service.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type {
@@ -55,18 +56,12 @@ const toolPayload = z.object({
   toolName: z.string(),
   status: z.enum(['STARTED', 'COMPLETED', 'FAILED']),
 });
-const imagePayload = z.object({
-  id: z.uuid(),
-  status: z.string(),
-  url: z.url().nullable(),
-  width: z.number().int().nullable(),
-  height: z.number().int().nullable(),
-  createdAt: z.coerce.date(),
-});
+export const imagePayload = z.object({ id: z.uuid() });
 
 const mapPart = async (
   part: MessagePartRecord,
   catalog: CatalogService,
+  assets: ReadonlyMap<string, AssetGraphql>,
 ): Promise<MessagePartGraphql | null> => {
   if (part.kind === 'text') {
     const payload = textPayload.safeParse(part.payload);
@@ -105,8 +100,10 @@ const mapPart = async (
   }
   if (part.kind === 'image') {
     const payload = imagePayload.safeParse(part.payload);
-    return payload.success
-      ? { __typename: 'ImageMessagePart', id: part.id, asset: payload.data }
+    if (!payload.success) return null;
+    const asset = assets.get(payload.data.id);
+    return asset
+      ? { __typename: 'ImageMessagePart', id: part.id, asset }
       : null;
   }
   return null;
@@ -116,6 +113,7 @@ export const mapMessages = async (
   records: ReadonlyArray<MessageRecord>,
   parts: ReadonlyArray<MessagePartRecord>,
   catalog: CatalogService,
+  assets: ReadonlyMap<string, AssetGraphql> = new Map(),
 ): Promise<ReadonlyArray<MessageGraphql>> => {
   const partsByMessage = new Map<string, Array<MessagePartRecord>>();
   for (const part of parts) {
@@ -127,7 +125,7 @@ export const mapMessages = async (
     records.map(async (message) => {
       const mapped = await Promise.all(
         (partsByMessage.get(message.id) ?? []).map((part) =>
-          mapPart(part, catalog),
+          mapPart(part, catalog, assets),
         ),
       );
       return {

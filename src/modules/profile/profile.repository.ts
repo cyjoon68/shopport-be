@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
@@ -42,7 +42,7 @@ export class ProfileRepository {
     return this.viewer(accountId);
   }
 
-  public async deleteAccount(accountId: string): Promise<boolean> {
+  public deleteAccount = async (accountId: string): Promise<boolean> => {
     const deletedAt = new Date();
     return this.database.transaction(async (transaction) => {
       const rows = await transaction
@@ -64,8 +64,9 @@ export class ProfileRepository {
         id: uuidv7(),
         topic: 'account.purge',
         payload: { accountId },
+        nextAttemptAt: sql`clock_timestamp() + interval '15 minutes'`,
       });
       return true;
     });
-  }
+  };
 }

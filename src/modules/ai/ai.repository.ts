@@ -141,14 +141,7 @@ export class AiRepository {
           messageId: input.userMessageId,
           kind: 'image',
           position: parts.length,
-          payload: {
-            id: input.assetId,
-            status: 'PROCESSING',
-            url: null,
-            width: null,
-            height: null,
-            createdAt: now.toISOString(),
-          },
+          payload: { id: input.assetId },
         });
       }
       if (parts.length > 0)

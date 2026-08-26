@@ -2,10 +2,11 @@ import { Injectable, Scope } from '@nestjs/common';
 import DataLoader from 'dataloader';
 
 import { ArchiveReader } from '../archive/archive.reader.js';
+import { AssetsService } from '../assets/assets.service.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { ConversationRepository } from './conversation.repository.js';
 import type { MessageGraphql } from './conversation.types.js';
-import { mapMessages } from './message.mapper.js';
+import { imagePayload, mapMessages } from './message.mapper.js';
 
 const maximumMessages = 50;
 
@@ -17,6 +18,7 @@ export class MessageLoader {
     repository: ConversationRepository,
     catalog: CatalogService,
     archives: ArchiveReader,
+    assets: AssetsService,
   ) {
     this.#loader = new DataLoader(
       async (conversationIds: ReadonlyArray<string>) => {
@@ -63,7 +65,22 @@ export class MessageLoader {
             ),
           ),
         ];
-        const mapped = await mapMessages(messages, parts, catalog);
+        const assetIds = new Set<string>();
+        for (const part of parts) {
+          if (part.kind !== 'image') continue;
+          const payload = imagePayload.safeParse(part.payload);
+          if (payload.success) assetIds.add(payload.data.id);
+        }
+        const currentAssets =
+          assetIds.size > 0
+            ? await assets.findForConversations([...assetIds], conversationIds)
+            : [];
+        const mapped = await mapMessages(
+          messages,
+          parts,
+          catalog,
+          new Map(currentAssets.map((asset) => [asset.id, asset])),
+        );
         const sourceById = new Map(
           messages.map((message) => [message.id, message] as const),
         );

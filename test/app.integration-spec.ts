@@ -34,6 +34,7 @@ import type {
 } from '../src/modules/catalog/types.js';
 import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
+import { AssetResultConsumer } from '../src/worker/asset-result.consumer.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';
 import { OutboxWakeup } from '../src/worker/outbox-wakeup.js';
 import { RetentionCleanup } from '../src/worker/retention-cleanup.js';
@@ -47,6 +48,11 @@ const objectPutCalls: Array<readonly [StorageBucket, string]> = [];
 const objectGetCalls: Array<readonly [StorageBucket, string]> = [];
 const objectDeleteKeyCalls: Array<readonly [StorageBucket, string]> = [];
 const objectDeletePrefixCalls: Array<readonly [StorageBucket, string]> = [];
+const normalizationResultOrder: string[] = [];
+let normalizationDeleteBarrier: Promise<void> | undefined;
+let normalizationDeleteBarrierKey: readonly [StorageBucket, string] | undefined;
+let resolveNormalizationDeleteStarted: (() => void) | undefined;
+let objectDeleteError: Error | undefined;
 const objectStore = {
   put: (bucket: StorageBucket, key: string, body: Buffer): Promise<void> => {
     objectPutCalls.push([bucket, key]);
@@ -62,7 +68,16 @@ const objectStore = {
   },
   deleteKey: (bucket: StorageBucket, key: string): Promise<void> => {
     objectDeleteKeyCalls.push([bucket, key]);
-    return Promise.resolve();
+    normalizationResultOrder.push(`delete:${bucket}:${key}`);
+    if (objectDeleteError) return Promise.reject(objectDeleteError);
+    const blocked =
+      normalizationDeleteBarrier &&
+      (!normalizationDeleteBarrierKey ||
+        (normalizationDeleteBarrierKey[0] === bucket &&
+          normalizationDeleteBarrierKey[1] === key));
+    if (!blocked) return Promise.resolve();
+    resolveNormalizationDeleteStarted?.();
+    return normalizationDeleteBarrier ?? Promise.resolve();
   },
   deletePrefix: (bucket: StorageBucket, prefix: string): Promise<void> => {
     objectDeletePrefixCalls.push([bucket, prefix]);
@@ -246,6 +261,7 @@ describe('Shopport API vertical flow', () => {
   let workerModule: TestingModule;
   let staleRunRecovery: StaleRunRecovery;
   let archiveWriter: ArchiveWriter;
+  let assetResultConsumer: AssetResultConsumer;
   let archiveReader: ArchiveReader;
   let outboxProcessor: OutboxProcessor;
   let outboxWakeup: OutboxWakeup;
@@ -362,6 +378,7 @@ describe('Shopport API vertical flow', () => {
     staleRunRecovery = workerModule.get(StaleRunRecovery);
     archiveWriter = workerModule.get(ArchiveWriter);
     archiveReader = workerModule.get(ArchiveReader);
+    assetResultConsumer = workerModule.get(AssetResultConsumer);
     outboxProcessor = workerModule.get(OutboxProcessor);
     outboxWakeup = workerModule.get(OutboxWakeup);
     retentionCleanup = workerModule.get(RetentionCleanup);
@@ -851,8 +868,12 @@ describe('Shopport API vertical flow', () => {
   registerWorkerScenarios(() => ({
     archiveReader,
     archiveWriter,
+    assetResultConsumer,
+    baseUrl,
     conversationId,
+    createAiOwner,
     integrationSubject,
+    normalizationResultOrder,
     objectDeleteKeyCalls,
     objectDeletePrefixCalls,
     objectGetCalls,
@@ -862,6 +883,16 @@ describe('Shopport API vertical flow', () => {
     outboxWakeup,
     pool,
     retentionCleanup,
+    setNormalizationDeleteBarrier: (barrier, key): void => {
+      normalizationDeleteBarrier = barrier;
+      normalizationDeleteBarrierKey = key;
+    },
+    setObjectDeleteError: (error): void => {
+      objectDeleteError = error;
+    },
+    setResolveNormalizationDeleteStarted: (resolve): void => {
+      resolveNormalizationDeleteStarted = resolve;
+    },
     storedObjects,
     workerModule,
   }));

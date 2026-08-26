@@ -26,6 +26,67 @@ const product: CatalogProduct = {
 };
 
 describe('AiRepository', () => {
+  it('stores only the asset ID in a new image part', async () => {
+    const existingMessageLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const conversationLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000010' }]);
+    const assetLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000014' }]);
+    const query = (
+      limit: typeof existingMessageLimit,
+    ): Readonly<{ from: ReturnType<typeof jest.fn> }> => ({
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({ limit })),
+      })),
+    });
+    const runReturning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000011' }]);
+    const runConflict = jest.fn(() => ({ returning: runReturning }));
+    const runValues = jest.fn(() => ({ onConflictDoNothing: runConflict }));
+    const persistedValues = jest
+      .fn<(value: unknown) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const insert = jest.fn((table: unknown) =>
+      table === aiRuns ? { values: runValues } : { values: persistedValues },
+    );
+    const transaction = {
+      execute: jest.fn(() => Promise.resolve()),
+      insert,
+      select: jest
+        .fn()
+        .mockReturnValueOnce(query(existingMessageLimit))
+        .mockReturnValueOnce(query(conversationLimit))
+        .mockReturnValueOnce(query(assetLimit)),
+    };
+    const repository = new AiRepository({
+      transaction: (
+        callback: (value: typeof transaction) => Promise<boolean>,
+      ) => callback(transaction),
+    } as unknown as Database);
+
+    await repository.beginRun({
+      accountId: '0198a122-0c00-7000-8000-000000000012',
+      assetId: '0198a122-0c00-7000-8000-000000000014',
+      conversationId: '0198a122-0c00-7000-8000-000000000010',
+      runId: '0198a122-0c00-7000-8000-000000000011',
+      text: '',
+      userMessageId: '0198a122-0c00-7000-8000-000000000013',
+    });
+
+    const persistedParts = persistedValues.mock.calls.at(-1)?.at(0);
+    expect(persistedParts).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        payload: { id: '0198a122-0c00-7000-8000-000000000014' },
+      }),
+    ]);
+  });
+
   it('starts an owned conversation run without billing state', async () => {
     const existingMessageLimit = jest
       .fn<() => Promise<Array<{ id: string }>>>()

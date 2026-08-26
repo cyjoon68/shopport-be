@@ -116,7 +116,7 @@ export class ConversationRepository {
     return rows.at(0) ?? null;
   }
 
-  public async delete(accountId: string, id: string): Promise<boolean> {
+  public delete = async (accountId: string, id: string): Promise<boolean> => {
     const deletedAt = new Date();
     return this.database.transaction(async (transaction) => {
       const rows = await transaction
@@ -135,10 +135,11 @@ export class ConversationRepository {
         id: uuidv7(),
         topic: 'conversation.purge',
         payload: { accountId, conversationId: id },
+        nextAttemptAt: sql`clock_timestamp() + interval '15 minutes'`,
       });
       return true;
     });
-  }
+  };
 
   public async messagesFor(
     conversationIds: ReadonlyArray<string>,

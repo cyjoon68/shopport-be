@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
+import type { AssetGraphql } from '../assets/assets.service.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogService } from '../catalog/catalog.service.js';
 import type { CatalogProduct } from '../catalog/types.js';
@@ -25,6 +26,81 @@ const product: CatalogProduct = {
 };
 
 describe('mapMessages', () => {
+  it('maps an archived image payload from the supplied current asset', async () => {
+    const asset: AssetGraphql = {
+      id: '0198a122-0c00-7000-8000-000000000015',
+      status: 'READY',
+      url: 'https://assets.example.com/current.jpg',
+      width: 1200,
+      height: 900,
+      createdAt: new Date('2026-08-15T00:00:00Z'),
+    };
+    const messages = await mapMessages(
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000011',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          role: 'user',
+          status: 'completed',
+          createdAt: new Date('2026-08-14T00:00:00Z'),
+        },
+      ],
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000012',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'image',
+          position: 0,
+          payload: {
+            id: asset.id,
+            status: 'PROCESSING',
+            url: null,
+            width: null,
+            height: null,
+            createdAt: '2026-08-14T00:00:00Z',
+          },
+        },
+      ],
+      {} as CatalogService,
+      new Map([[asset.id, asset]]),
+    );
+
+    expect(messages[0]?.parts).toEqual([
+      {
+        __typename: 'ImageMessagePart',
+        id: '0198a122-0c00-7000-8000-000000000012',
+        asset,
+      },
+    ]);
+  });
+
+  it('omits an image part when the current asset is absent', async () => {
+    const messages = await mapMessages(
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000011',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          role: 'user',
+          status: 'completed',
+          createdAt: new Date('2026-08-14T00:00:00Z'),
+        },
+      ],
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000012',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'image',
+          position: 0,
+          payload: { id: '0198a122-0c00-7000-8000-000000000015' },
+        },
+      ],
+      {} as CatalogService,
+      new Map(),
+    );
+
+    expect(messages[0]?.parts).toEqual([]);
+  });
+
   it('restores an archived ask_user part for the GraphQL union', async () => {
     const messages = await mapMessages(
       [
