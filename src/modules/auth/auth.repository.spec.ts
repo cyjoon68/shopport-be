@@ -8,6 +8,10 @@ import { AuthRepository } from './auth.repository.js';
 
 describe('AuthRepository refresh replay handling', () => {
   it('revokes only descendants of the replayed session', async () => {
+    const accountId = '0198a122-0c00-7000-8000-000000000001';
+    const ownerLimit = jest
+      .fn<() => Promise<Array<{ accountId: string }>>>()
+      .mockResolvedValue([{ accountId }]);
     const locked = jest
       .fn<
         () => Promise<
@@ -22,7 +26,7 @@ describe('AuthRepository refresh replay handling', () => {
       >()
       .mockResolvedValue([
         {
-          accountId: '0198a122-0c00-7000-8000-000000000001',
+          accountId,
           expiresAt: new Date('2099-01-01T00:00:00.000Z'),
           id: '0198a122-0c00-7000-8000-000000000002',
           revokedAt: new Date('2026-08-24T00:00:00.000Z'),
@@ -31,15 +35,24 @@ describe('AuthRepository refresh replay handling', () => {
       ]);
     const transaction = {
       execute: jest.fn(() => Promise.resolve()),
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          innerJoin: jest.fn(() => ({
-            where: jest.fn(() => ({
-              limit: jest.fn(() => ({ for: locked })),
+      select: jest
+        .fn()
+        .mockReturnValueOnce({
+          from: jest.fn(() => ({
+            innerJoin: jest.fn(() => ({
+              where: jest.fn(() => ({ limit: ownerLimit })),
             })),
           })),
-        })),
-      })),
+        })
+        .mockReturnValueOnce({
+          from: jest.fn(() => ({
+            innerJoin: jest.fn(() => ({
+              where: jest.fn(() => ({
+                limit: jest.fn(() => ({ for: locked })),
+              })),
+            })),
+          })),
+        }),
       update: jest.fn(() => ({
         set: jest.fn(() => ({ where: jest.fn(() => Promise.resolve()) })),
       })),
@@ -62,7 +75,12 @@ describe('AuthRepository refresh replay handling', () => {
     ).resolves.toEqual({ status: 'replay' });
 
     expect(transaction.update).not.toHaveBeenCalled();
-    expect(transaction.execute).toHaveBeenCalledTimes(1);
+    expect(transaction.execute).toHaveBeenCalledTimes(2);
+    const lock = transaction.execute.mock.calls.at(0)?.at(0);
+    if (!lock) throw new Error('Expected account session lock');
+    const query = new PgDialect().sqlToQuery(lock as SQL);
+    expect(query.sql).toContain('pg_advisory_xact_lock(hashtextextended');
+    expect(query.params).toEqual([accountId]);
   });
 });
 
@@ -84,19 +102,31 @@ describe('AuthRepository session revocation', () => {
     const locked = jest
       .fn<() => Promise<Array<{ id: string }>>>()
       .mockResolvedValue(found ? [{ id: sessionId }] : []);
+    const ownerLimit = jest
+      .fn<() => Promise<Array<{ accountId: string }>>>()
+      .mockResolvedValue(
+        found ? [{ accountId: '0198a122-0c00-7000-8000-000000000001' }] : [],
+      );
     const transaction = {
       execute: (statement: SQL): Promise<void> => {
         statements.push(statement);
         executedInTransaction.push(transactionOpen);
         return Promise.resolve();
       },
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            limit: jest.fn(() => ({ for: locked })),
+      select: jest
+        .fn()
+        .mockReturnValueOnce({
+          from: jest.fn(() => ({
+            where: jest.fn(() => ({ limit: ownerLimit })),
           })),
-        })),
-      })),
+        })
+        .mockReturnValueOnce({
+          from: jest.fn(() => ({
+            where: jest.fn(() => ({
+              limit: jest.fn(() => ({ for: locked })),
+            })),
+          })),
+        }),
     };
     const database = {
       transaction: async (
@@ -117,26 +147,29 @@ describe('AuthRepository session revocation', () => {
     };
   };
 
-  it.each(['already-replaced', 'active'])(
-    'executes recursive lineage SQL inside the transaction for an %s parent',
-    async () => {
-      const { executedInTransaction, repository, statements } =
-        createRepository();
+  it('locks the account before recursive lineage revocation', async () => {
+    const { executedInTransaction, repository, statements } =
+      createRepository();
 
-      await expect(
-        repository.revokeSession(sessionId, 'stored-hash'),
-      ).resolves.toBe(true);
+    await expect(
+      repository.revokeSession(sessionId, 'stored-hash'),
+    ).resolves.toBe(true);
 
-      const statement = statements.at(0);
-      if (!statement) throw new Error('Expected recursive lineage statement');
-      const query = new PgDialect().sqlToQuery(statement);
+    const lock = statements.at(0);
+    if (!lock) throw new Error('Expected account session lock');
+    const lockQuery = new PgDialect().sqlToQuery(lock);
+    expect(lockQuery.sql).toContain('pg_advisory_xact_lock(hashtextextended');
+    expect(lockQuery.params).toEqual(['0198a122-0c00-7000-8000-000000000001']);
 
-      expect(executedInTransaction).toEqual([true]);
-      expect(statements).toHaveLength(1);
-      expect(query.sql.replace(/\s+/gu, ' ').trim()).toBe(recursiveLineageSql);
-      expect(query.params).toEqual([sessionId]);
-    },
-  );
+    const statement = statements.at(1);
+    if (!statement) throw new Error('Expected recursive lineage statement');
+    const query = new PgDialect().sqlToQuery(statement);
+
+    expect(executedInTransaction).toEqual([true, true]);
+    expect(statements).toHaveLength(2);
+    expect(query.sql.replace(/\s+/gu, ' ').trim()).toBe(recursiveLineageSql);
+    expect(query.params).toEqual([sessionId]);
+  });
 
   it('returns false without revocation when the exact session hash is absent', async () => {
     const { repository, statements } = createRepository(false);

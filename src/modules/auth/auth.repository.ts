@@ -116,6 +116,22 @@ export class AuthRepository {
     input: RotateSessionInput,
   ): Promise<RotateSessionResult> =>
     this.database.transaction(async (transaction) => {
+      const owners = await transaction
+        .select({ accountId: authSessions.accountId })
+        .from(authSessions)
+        .innerJoin(accounts, eq(authSessions.accountId, accounts.id))
+        .where(
+          and(
+            eq(authSessions.id, input.previousId),
+            isNull(accounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const owner = owners.at(0);
+      if (!owner) return { status: 'invalid' };
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${owner.accountId}, 0))`,
+      );
       const sessions = await transaction
         .select({
           id: authSessions.id,
@@ -191,6 +207,21 @@ export class AuthRepository {
     expectedHash: string,
   ): Promise<boolean> =>
     this.database.transaction(async (transaction) => {
+      const owners = await transaction
+        .select({ accountId: authSessions.accountId })
+        .from(authSessions)
+        .where(
+          and(
+            eq(authSessions.id, id),
+            eq(authSessions.tokenHash, expectedHash),
+          ),
+        )
+        .limit(1);
+      const owner = owners.at(0);
+      if (!owner) return false;
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${owner.accountId}, 0))`,
+      );
       const sessions = await transaction
         .select({ id: authSessions.id })
         .from(authSessions)
