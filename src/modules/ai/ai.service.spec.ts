@@ -8,14 +8,15 @@ import type { CatalogProduct } from '../catalog/types.js';
 import type { AiRepository } from './ai.repository.js';
 import { AiService } from './ai.service.js';
 import type { AiProviderId } from './ai-request.js';
-import type {
-  AiStreamAdapter,
-  AiStreamInput,
-  AiStreamLifecycle,
-} from './ai-stream.adapter.js';
+import type { AiStreamAdapter } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import type { AiTools } from './ai-tools.js';
-import type { AiHistoryMessage, CompleteRunInput } from './types.js';
+import type {
+  AiHistoryMessage,
+  AiStreamInput,
+  AiStreamLifecycle,
+  CompleteRunInput,
+} from './types.js';
 
 const emptyStream = async function* (): AsyncIterable<StreamChunk> {
   await Promise.resolve();

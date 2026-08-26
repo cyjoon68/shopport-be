@@ -5,13 +5,10 @@ import { EventType } from '@tanstack/ai';
 
 import type { Environment } from '../../config/environment.js';
 import type { CatalogProduct } from '../catalog/types.js';
-import type { AiStreamLifecycle } from './ai-stream.adapter.js';
+import { askUserSchema } from './ai-provider-protocol.js';
 import type { AiToolSession } from './ai-tools.js';
-import {
-  askUserSchema,
-  OpenAiCompatibleAiStreamAdapter,
-} from './openai-compatible-ai.adapter.js';
-import type { AiStreamResult } from './types.js';
+import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
+import type { AiStreamLifecycle, AiStreamResult } from './types.js';
 
 const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',

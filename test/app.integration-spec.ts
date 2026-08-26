@@ -13,13 +13,13 @@ import { z } from 'zod';
 
 import { decodePageCursor } from '../src/common/cursor.js';
 import { DATABASE, DATABASE_POOL } from '../src/database/database.module.js';
-import type {
-  AiStreamAdapter,
-  AiStreamInput,
-  AiStreamLifecycle,
-} from '../src/modules/ai/ai-stream.adapter.js';
+import type { AiStreamAdapter } from '../src/modules/ai/ai-stream.adapter.js';
 import { AI_STREAM_ADAPTER } from '../src/modules/ai/ai-stream.adapter.js';
 import type { AiToolSession } from '../src/modules/ai/ai-tools.js';
+import type {
+  AiStreamInput,
+  AiStreamLifecycle,
+} from '../src/modules/ai/types.js';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import type {

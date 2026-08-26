@@ -33,6 +33,22 @@ export type AiStreamResult = Readonly<{
   askUser: AskUser | null;
 }>;
 
+export type AiStreamInput = Readonly<{
+  threadId: string;
+  runId: string;
+  text: string;
+  providerIds?: ReadonlyArray<AiProviderId>;
+  history?: ReadonlyArray<AiHistoryMessage>;
+  image: Readonly<{ base64: string; mimeType: string }> | null;
+}>;
+
+export type AiStreamLifecycle = Readonly<{
+  onComplete: (result: AiStreamResult) => Promise<void>;
+  onFailure: () => Promise<void>;
+  isCancelled: () => Promise<boolean>;
+  renewLease: () => Promise<void>;
+}>;
+
 export type PersistedProductRecommendation = AiProductRecommendation &
   Readonly<{ productSnapshot: ProductGraphql | null }>;
 
