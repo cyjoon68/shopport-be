@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+
 import {
   BadRequestException,
   Body,
@@ -47,8 +49,25 @@ const pipeResponse = async (
     target.end();
     return;
   }
-  for await (const chunk of source.body) target.write(Buffer.from(chunk));
-  target.end();
+  const reader = source.body.getReader();
+  const isClosed = (): boolean => target.destroyed || target.writableEnded;
+  const cancel = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  target.once('close', cancel);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || isClosed()) break;
+      if (!target.write(Buffer.from(value)) && !isClosed())
+        await Promise.race([once(target, 'drain'), once(target, 'close')]);
+      if (isClosed()) break;
+    }
+  } finally {
+    target.off('close', cancel);
+    reader.releaseLock();
+    if (!isClosed()) target.end();
+  }
 };
 
 @Controller('v1/ai/chat')

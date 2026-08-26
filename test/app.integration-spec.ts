@@ -11,6 +11,7 @@ import request from 'supertest';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
+import { DATABASE } from '../src/database/database.module.js';
 import type {
   AiStreamAdapter,
   AiStreamInput,
@@ -33,6 +34,8 @@ import type {
 import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';
+import { OutboxWakeup } from '../src/worker/outbox-wakeup.js';
+import { RetentionCleanup } from '../src/worker/retention-cleanup.js';
 import { StaleRunRecovery } from '../src/worker/stale-run-recovery.js';
 
 const storedObjects = new Map<string, Buffer>();
@@ -92,8 +95,6 @@ const integrationCatalogProvider: CatalogProvider = {
       endCursor: null,
       hasNextPage: false,
     }),
-  getProduct: (id) =>
-    Promise.resolve(id === integrationProduct.id ? integrationProduct : null),
 };
 
 const createIntegrationStream = async function* (
@@ -223,13 +224,20 @@ describe('Shopport API vertical flow', () => {
   let archiveWriter: ArchiveWriter;
   let archiveReader: ArchiveReader;
   let outboxProcessor: OutboxProcessor;
+  let outboxWakeup: OutboxWakeup;
+  let retentionCleanup: RetentionCleanup;
   let postgresStarted = false;
   let poolInitialized = false;
   let workerModuleInitialized = false;
   let appInitialized = false;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer('postgres:17-alpine')
+    postgres = await new PostgreSqlContainer('postgres:16.8-alpine')
+      .withCommand([
+        'postgres',
+        '-c',
+        'shared_preload_libraries=pg_stat_statements',
+      ])
       .withDatabase('shopport')
       .withUsername('shopport')
       .withPassword('shopport')
@@ -261,6 +269,8 @@ describe('Shopport API vertical flow', () => {
     archiveWriter = workerModule.get(ArchiveWriter);
     archiveReader = workerModule.get(ArchiveReader);
     outboxProcessor = workerModule.get(OutboxProcessor);
+    outboxWakeup = workerModule.get(OutboxWakeup);
+    retentionCleanup = workerModule.get(RetentionCleanup);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({
       imports: [AppModule],
@@ -312,9 +322,26 @@ describe('Shopport API vertical flow', () => {
        from pg_constraint
        where conname = 'ai_runs_status_check'`,
     );
+    const [extension, outboxColumns, statementStatistics] = await Promise.all([
+      pool.query<{ extname: string }>(
+        "select extname from pg_extension where extname = 'pg_stat_statements'",
+      ),
+      pool.query<{ column_name: string }>(
+        `select column_name
+           from information_schema.columns
+           where table_name = 'outbox'
+             and column_name in ('locked_by', 'locked_until')`,
+      ),
+      pool.query<{ count: string }>(
+        'select count(*)::text as count from pg_stat_statements',
+      ),
+    ]);
 
     expect(columns.rows).toHaveLength(3);
     expect(constraint.rows.at(0)?.definition).toContain('cancelled');
+    expect(extension.rows).toHaveLength(1);
+    expect(outboxColumns.rows).toHaveLength(2);
+    expect(statementStatistics.rows).toHaveLength(1);
   });
 
   it('creates one identity and account under concurrent first login', async () => {
@@ -421,7 +448,14 @@ describe('Shopport API vertical flow', () => {
       .get(`/v1/ai/chat?runId=${completedRunId}&offset=0`)
       .set('authorization', `Bearer ${accessToken}`)
       .expect(200);
-    expect(replay.text).toContain('RUN_FINISHED');
+    const replayChunks = parseStreamChunks(replay.text);
+    expect(replayChunks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: EventType.CUSTOM }),
+      ]),
+    );
+    expect(replayChunks.some(({ type }) => type === 'RUN_ERROR')).toBe(false);
+    expect(replayChunks.at(-1)?.type).toBe('RUN_FINISHED');
 
     const searchResponse = await request(baseUrl)
       .post('/graphql')
@@ -684,6 +718,11 @@ describe('Shopport API vertical flow', () => {
       expect.objectContaining({ id: archivedMessageId }),
     ]);
     expect(objectGetCalls.at(-1)).toEqual(['archive', archiveKey]);
+    await expect(
+      pool.query('select id from message_parts where id = $1', [
+        archivedPartId,
+      ]),
+    ).resolves.toMatchObject({ rows: [] });
 
     const purgeAccountId = uuidv7();
     const originalKey = `uploads/${purgeAccountId}/${uuidv7()}/original`;
@@ -733,6 +772,147 @@ describe('Shopport API vertical flow', () => {
       `archives/${purgeAccountId}/`,
     ]);
   }, 30_000);
+
+  it('claims an outbox event once across competing workers', async () => {
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected Kakao account');
+    const eventId = uuidv7();
+    const originalKey = `uploads/${accountId}/${uuidv7()}/original`;
+    objectDeleteKeyCalls.length = 0;
+    await pool.query(
+      `insert into outbox (id, topic, payload)
+       values ($1, 'asset.purge', $2::jsonb)`,
+      [
+        eventId,
+        JSON.stringify({ accountId, originalKey, normalizedKey: null }),
+      ],
+    );
+    const competingProcessor = new OutboxProcessor(
+      workerModule.get(DATABASE),
+      objectStore as unknown as ObjectStore,
+    );
+
+    const results = await Promise.all([
+      outboxProcessor.process(),
+      competingProcessor.process(),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(
+      objectDeleteKeyCalls.filter(
+        ([bucket, key]) => bucket === 'raw' && key === originalKey,
+      ),
+    ).toHaveLength(1);
+    const event = await pool.query<{
+      locked_by: string | null;
+      published_at: Date | null;
+    }>('select locked_by, published_at from outbox where id = $1', [eventId]);
+    expect(event.rows.at(0)?.locked_by).toBeNull();
+    expect(event.rows.at(0)?.published_at).toBeInstanceOf(Date);
+  });
+
+  it('wakes the outbox worker only for committed changes', async () => {
+    const committedId = uuidv7();
+    const rolledBackId = uuidv7();
+    const signal = new AbortController().signal;
+    const client = await pool.connect();
+    await outboxWakeup.listen();
+    try {
+      await client.query('begin');
+      await client.query(
+        `insert into outbox (id, topic, payload)
+         values ($1, 'test.wakeup', '{}'::jsonb)`,
+        [committedId],
+      );
+      await expect(outboxWakeup.wait(200, signal)).resolves.toBe(false);
+      await client.query('commit');
+      await expect(outboxWakeup.wait(2_000, signal)).resolves.toBe(true);
+
+      await client.query('begin');
+      await client.query(
+        `insert into outbox (id, topic, payload)
+         values ($1, 'test.wakeup', '{}'::jsonb)`,
+        [rolledBackId],
+      );
+      await client.query('rollback');
+      await expect(outboxWakeup.wait(200, signal)).resolves.toBe(false);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+    await pool.query('delete from outbox where id = $1', [committedId]);
+  });
+
+  it('retains active refresh-token lineage while pruning expired runtime rows', async () => {
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected Kakao account');
+    const now = new Date();
+    const parentId = uuidv7();
+    const childId = uuidv7();
+    const expiredId = uuidv7();
+    const publishedId = uuidv7();
+    const failedId = uuidv7();
+    const retainedId = uuidv7();
+    await pool.query(
+      `insert into auth_sessions
+       (id, account_id, token_hash, expires_at, replaced_by_session_id)
+       values
+       ($1, $4, $5, $6, $2),
+       ($2, $4, $7, $8, null),
+       ($3, $4, $9, $6, null)`,
+      [
+        parentId,
+        childId,
+        expiredId,
+        accountId,
+        `parent-${parentId}`,
+        new Date(now.getTime() - 40 * 86_400_000),
+        `child-${childId}`,
+        new Date(now.getTime() + 30 * 86_400_000),
+        `expired-${expiredId}`,
+      ],
+    );
+    await pool.query(
+      `insert into outbox (id, topic, payload, published_at, failed_at)
+       values
+       ($1, 'asset.purge', '{}'::jsonb, $4, null),
+       ($2, 'asset.purge', '{}'::jsonb, null, $5),
+       ($3, 'asset.purge', '{}'::jsonb, $6, null)`,
+      [
+        publishedId,
+        failedId,
+        retainedId,
+        new Date(now.getTime() - 8 * 86_400_000),
+        new Date(now.getTime() - 31 * 86_400_000),
+        new Date(now.getTime() - 86_400_000),
+      ],
+    );
+
+    await retentionCleanup.cleanup(now);
+
+    const sessions = await pool.query<{ id: string }>(
+      'select id from auth_sessions where id = any($1::uuid[]) order by id',
+      [[parentId, childId, expiredId]],
+    );
+    expect(sessions.rows.map(({ id }) => id).sort()).toEqual(
+      [parentId, childId].sort(),
+    );
+    const events = await pool.query<{ id: string }>(
+      'select id from outbox where id = any($1::uuid[]) order by id',
+      [[publishedId, failedId, retainedId]],
+    );
+    expect(events.rows.map(({ id }) => id)).toEqual([retainedId]);
+  });
 
   it('revokes the access session on logout', async () => {
     const [sessionId, secret] = refreshToken.split('.');

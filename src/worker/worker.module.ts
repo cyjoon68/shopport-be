@@ -8,6 +8,8 @@ import { ArchiveModule } from '../modules/archive/archive.module.js';
 import { CatalogModule } from '../modules/catalog/catalog.module.js';
 import { AssetResultConsumer } from './asset-result.consumer.js';
 import { OutboxProcessor } from './outbox.processor.js';
+import { OutboxWakeup } from './outbox-wakeup.js';
+import { RetentionCleanup } from './retention-cleanup.js';
 import { StaleRunRecovery } from './stale-run-recovery.js';
 
 @Module({
@@ -25,6 +27,8 @@ import { StaleRunRecovery } from './stale-run-recovery.js';
     AiRepository,
     AssetResultConsumer,
     OutboxProcessor,
+    OutboxWakeup,
+    RetentionCleanup,
     StaleRunRecovery,
   ],
 })

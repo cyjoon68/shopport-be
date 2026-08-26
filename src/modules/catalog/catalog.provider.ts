@@ -182,7 +182,6 @@ export class CatalogProvider implements CatalogProviderContract {
     'www.daisomall.co.kr',
   ] as const;
 
-  readonly #products = new Map<string, CatalogProduct>();
   #fetchImpl: typeof fetch = fetch;
 
   public useFetch = (fetchImpl: typeof fetch): void => {
@@ -229,16 +228,12 @@ export class CatalogProvider implements CatalogProviderContract {
       }
       items = rankProducts(inventory);
     }
-    items.forEach((product) => this.#products.set(product.id, product));
     return {
       items,
       endCursor: encodePageCursor(page + 1),
       hasNextPage: products.length === fetchSize || withinBudget.length > size,
     };
   };
-
-  public getProduct = (id: string): Promise<CatalogProduct | null> =>
-    Promise.resolve(this.#products.get(id) ?? null);
 
   private readonly searchOliveYoung = async (
     query: string,

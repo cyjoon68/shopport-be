@@ -1,0 +1,1 @@
+ALTER TABLE "catalog_metadata" ADD COLUMN "snapshot" jsonb;

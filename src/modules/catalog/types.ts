@@ -53,6 +53,5 @@ export type CatalogProvider = Readonly<{
   capabilities: ReadonlyArray<CatalogCapability>;
   outboundHosts: ReadonlyArray<string>;
   search: (input: CatalogSearchInput) => Promise<CatalogSearchResult>;
-  getProduct: (id: string) => Promise<CatalogProduct | null>;
   syncCatalog?: () => Promise<void>;
 }>;

@@ -1,17 +1,12 @@
+import { randomUUID } from 'node:crypto';
+
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, inArray, isNull, lte } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '../database/database.module.js';
 import { DATABASE } from '../database/database.module.js';
-import {
-  accounts,
-  assets,
-  conversations,
-  messageParts,
-  messages,
-  outbox,
-} from '../database/schema.js';
+import { accounts, assets, conversations, outbox } from '../database/schema.js';
 import { ObjectStore } from '../storage/object-store.js';
 
 const accountPayload = z.object({ accountId: z.uuid() });
@@ -20,6 +15,8 @@ const assetPayload = accountPayload.extend({
   originalKey: z.string().min(1),
   normalizedKey: z.string().nullable(),
 });
+const claimLease = sql`now() + interval '5 minutes'`;
+const availableAt = sql`greatest(${outbox.nextAttemptAt}, coalesce(${outbox.lockedUntil}, '-infinity'::timestamptz))`;
 
 type OutboxRecord = Readonly<{
   attemptCount: number;
@@ -30,37 +27,33 @@ type OutboxRecord = Readonly<{
 
 @Injectable()
 export class OutboxProcessor {
+  private readonly workerId = randomUUID();
+
   public constructor(
     @Inject(DATABASE) private readonly database: Database,
     private readonly objects: ObjectStore,
   ) {}
 
   public process = async (): Promise<boolean> => {
-    const now = new Date();
-    const events = await this.database
-      .select({
-        attemptCount: outbox.attemptCount,
-        id: outbox.id,
-        topic: outbox.topic,
-        payload: outbox.payload,
-      })
-      .from(outbox)
-      .where(
-        and(
-          isNull(outbox.publishedAt),
-          isNull(outbox.failedAt),
-          lte(outbox.nextAttemptAt, now),
-        ),
-      )
-      .orderBy(outbox.nextAttemptAt, outbox.createdAt)
-      .limit(20);
+    const events = await this.claim();
     for (const event of events) {
       try {
         await this.processEvent(event);
         await this.database
           .update(outbox)
-          .set({ lastError: null, publishedAt: new Date() })
-          .where(and(eq(outbox.id, event.id), isNull(outbox.publishedAt)));
+          .set({
+            lastError: null,
+            lockedBy: null,
+            lockedUntil: null,
+            publishedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(outbox.id, event.id),
+              eq(outbox.lockedBy, this.workerId),
+              isNull(outbox.publishedAt),
+            ),
+          );
       } catch (error) {
         const attemptCount = event.attemptCount + 1;
         const failedAt = attemptCount >= 10 ? new Date() : null;
@@ -74,13 +67,74 @@ export class OutboxProcessor {
               ? error.message
               : 'Worker failure'
             ).slice(0, 500),
+            lockedBy: null,
+            lockedUntil: null,
             nextAttemptAt: new Date(Date.now() + delaySeconds * 1_000),
           })
-          .where(and(eq(outbox.id, event.id), isNull(outbox.publishedAt)));
+          .where(
+            and(
+              eq(outbox.id, event.id),
+              eq(outbox.lockedBy, this.workerId),
+              isNull(outbox.publishedAt),
+            ),
+          );
       }
     }
     return events.length > 0;
   };
+
+  public nextWakeDelay = async (
+    maximumMilliseconds: number,
+  ): Promise<number> => {
+    const rows = await this.database
+      .select({
+        milliseconds: sql<string>`extract(epoch from (${availableAt} - now())) * 1000`,
+      })
+      .from(outbox)
+      .where(and(isNull(outbox.publishedAt), isNull(outbox.failedAt)))
+      .orderBy(availableAt)
+      .limit(1);
+    const milliseconds = Number(rows.at(0)?.milliseconds);
+    if (!Number.isFinite(milliseconds)) return maximumMilliseconds;
+    return Math.min(maximumMilliseconds, Math.max(0, Math.ceil(milliseconds)));
+  };
+
+  private readonly claim = async (): Promise<ReadonlyArray<OutboxRecord>> =>
+    this.database.transaction(async (transaction) => {
+      const events = await transaction
+        .select({
+          attemptCount: outbox.attemptCount,
+          id: outbox.id,
+          topic: outbox.topic,
+          payload: outbox.payload,
+        })
+        .from(outbox)
+        .where(
+          and(
+            isNull(outbox.publishedAt),
+            isNull(outbox.failedAt),
+            lte(outbox.nextAttemptAt, sql`now()`),
+            or(isNull(outbox.lockedUntil), lte(outbox.lockedUntil, sql`now()`)),
+          ),
+        )
+        .orderBy(outbox.nextAttemptAt, outbox.createdAt, outbox.id)
+        .limit(20)
+        .for('update', { skipLocked: true });
+      if (events.length === 0) return events;
+      await transaction
+        .update(outbox)
+        .set({
+          lockedBy: this.workerId,
+          lockedUntil: claimLease,
+        })
+        .where(
+          inArray(
+            outbox.id,
+            events.map(({ id }) => id),
+          ),
+        );
+      return events;
+    });
 
   private readonly processEvent = async (
     event: OutboxRecord,
@@ -106,19 +160,13 @@ export class OutboxProcessor {
   private readonly purgeConversation = async (
     payload: z.infer<typeof conversationPayload>,
   ): Promise<void> => {
-    const [assetRows, messageRows] = await Promise.all([
-      this.database
-        .select({
-          originalKey: assets.originalKey,
-          normalizedKey: assets.normalizedKey,
-        })
-        .from(assets)
-        .where(eq(assets.conversationId, payload.conversationId)),
-      this.database
-        .select({ id: messages.id })
-        .from(messages)
-        .where(eq(messages.conversationId, payload.conversationId)),
-    ]);
+    const assetRows = await this.database
+      .select({
+        originalKey: assets.originalKey,
+        normalizedKey: assets.normalizedKey,
+      })
+      .from(assets)
+      .where(eq(assets.conversationId, payload.conversationId));
     await Promise.all(
       assetRows.flatMap(({ originalKey, normalizedKey }) => [
         this.objects.deleteKey('raw', originalKey),
@@ -132,11 +180,6 @@ export class OutboxProcessor {
       `archives/${payload.accountId}/${payload.conversationId}/`,
     );
     await this.database.transaction(async (transaction) => {
-      const ids = messageRows.map(({ id }) => id);
-      if (ids.length > 0)
-        await transaction
-          .delete(messageParts)
-          .where(inArray(messageParts.messageId, ids));
       await transaction
         .delete(conversations)
         .where(eq(conversations.id, payload.conversationId));
@@ -144,22 +187,12 @@ export class OutboxProcessor {
   };
 
   private readonly purgeAccount = async (accountId: string): Promise<void> => {
-    const messageRows = await this.database
-      .select({ id: messages.id })
-      .from(messages)
-      .innerJoin(conversations, eq(messages.conversationId, conversations.id))
-      .where(eq(conversations.accountId, accountId));
     await Promise.all([
       this.objects.deletePrefix('raw', `uploads/${accountId}/`),
       this.objects.deletePrefix('normalized', `uploads/${accountId}/`),
       this.objects.deletePrefix('archive', `archives/${accountId}/`),
     ]);
     await this.database.transaction(async (transaction) => {
-      const ids = messageRows.map(({ id }) => id);
-      if (ids.length > 0)
-        await transaction
-          .delete(messageParts)
-          .where(inArray(messageParts.messageId, ids));
       await transaction.delete(accounts).where(eq(accounts.id, accountId));
     });
   };
