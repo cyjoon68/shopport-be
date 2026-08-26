@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { v5 as uuidv5 } from 'uuid';
 import { z } from 'zod';
 
+import { decodePageCursor, encodePageCursor } from '../../common/cursor.js';
 import { rankProducts } from './neutral-ranking.js';
 import type {
   CatalogProduct,
@@ -86,15 +87,6 @@ const catalogIdFor = (
   providerId: 'oliveyoung' | 'daiso',
   productCode: string,
 ): string => uuidv5(`${providerId}:${productCode}`, catalogIdNamespace);
-
-const pageFromCursor = (after: string | null): number => {
-  if (!after) return 1;
-  const page = Number(Buffer.from(after, 'base64url').toString('utf8'));
-  return Number.isInteger(page) && page > 0 ? page : 1;
-};
-
-const encodePageCursor = (page: number): string =>
-  Buffer.from(String(page), 'utf8').toString('base64url');
 
 const toOliveYoungProduct = (
   product: z.infer<typeof oliveYoungProductSchema>,
@@ -195,7 +187,7 @@ export class CatalogProvider implements CatalogProviderContract {
     if (query.length === 0) {
       return { items: [], endCursor: null, hasNextPage: false };
     }
-    const page = pageFromCursor(input.after);
+    const page = decodePageCursor(input.after ?? null);
     const size = Math.min(Math.max(input.first, 1), 20);
     const fetchSize = input.budgetMax === undefined ? size : 20;
     const providerId = input.providerId ?? 'daiso';

@@ -633,6 +633,47 @@ describe('Shopport API vertical flow', () => {
       .expect(409);
   }, 30_000);
 
+  it('surfaces invalid cursors as GraphQL validation errors', async () => {
+    const loginResponse = await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'invalid-cursor-nonce',
+      })
+      .expect(200);
+    const invalidCursorAccessToken = loginSchema.parse(
+      loginResponse.body,
+    ).accessToken;
+
+    for (const query of [
+      '{ conversations(first: 1, after: "MA") { edges { cursor } } }',
+      '{ savedProducts(first: 1, after: "MA") { edges { cursor } } }',
+      '{ searchProducts(input: { query: "텀블러" }, first: 1, after: "MA") { edges { cursor } } }',
+    ]) {
+      const response = await request(baseUrl)
+        .post('/graphql')
+        .set('authorization', `Bearer ${invalidCursorAccessToken}`)
+        .send({ query })
+        .expect(200);
+      const result = z
+        .object({
+          errors: z.array(
+            z.object({
+              message: z.string(),
+              extensions: z.object({ code: z.string() }),
+            }),
+          ),
+        })
+        .parse(response.body);
+
+      const error = result.errors.at(0);
+      expect(error).toBeDefined();
+      if (!error) throw new Error('Expected GraphQL validation error');
+      expect(error.message).toBe('Invalid cursor');
+      expect(error.extensions.code).toBe('VALIDATION_FAILED');
+    }
+  });
+
   it('hides cross-account replay and cancel, then cancels idempotently', async () => {
     const secondLoginResponse = await request(baseUrl)
       .post('/v1/auth/kakao')

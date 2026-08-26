@@ -122,4 +122,51 @@ describe('PostgresStreamDurability', () => {
     ).resolves.toEqual({ done: true, value: undefined });
     expect(query).not.toHaveBeenCalled();
   });
+
+  it('accepts the largest PostgreSQL replay offset', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '9223372036854775807',
+    );
+
+    await expect(
+      durability.read('9223372036854775807')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $3'), [
+      runId,
+      '9223372036854775807',
+      128,
+    ]);
+  });
+
+  it('rejects invalid replay offsets before querying PostgreSQL', async () => {
+    for (const offset of ['-2', '+1', '1.5', '9223372036854775808']) {
+      const query = jest
+        .fn<
+          (
+            text: string,
+            values?: Array<unknown>,
+          ) => Promise<{ rows: unknown[] }>
+        >()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+      const durability = new PostgresStreamDurability(
+        { query } as unknown as Pool,
+        runId,
+        offset,
+      );
+
+      await expect(
+        durability.read(offset)[Symbol.asyncIterator]().next(),
+      ).resolves.toEqual({ done: true, value: undefined });
+      expect(query).not.toHaveBeenCalled();
+    }
+  });
 });

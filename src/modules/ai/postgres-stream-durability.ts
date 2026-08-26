@@ -22,6 +22,7 @@ type DurableEntry = Readonly<{ offset: string; chunk: StreamChunk }>;
 type EventRow = Readonly<{ id: string; chunk: unknown }>;
 
 const readPageSize = 128;
+const maximumSignedBigint = 9_223_372_036_854_775_807n;
 
 const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -40,7 +41,8 @@ const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
 
 const offsetFor = (offset: string): bigint | null => {
   if (offset === '-1') return 0n;
-  return /^\d{1,20}$/u.test(offset) ? BigInt(offset) : null;
+  const parsed = /^\d{1,19}$/u.test(offset) ? BigInt(offset) : null;
+  return parsed !== null && parsed <= maximumSignedBigint ? parsed : null;
 };
 
 export class PostgresStreamDurability implements StreamDurability {

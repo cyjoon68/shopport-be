@@ -1,3 +1,5 @@
+import { jest } from '@jest/globals';
+
 import { CatalogProvider } from './catalog.provider.js';
 
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -161,6 +163,21 @@ describe('CatalogProvider', () => {
     await expect(
       provider.search({ query: '수납함', first: 3, after: null }),
     ).rejects.toThrow('Catalog request failed: 500');
+  });
+
+  it('rejects an invalid page cursor instead of fetching the first page', async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    const provider = new CatalogProvider();
+    provider.useFetch(fetchImpl);
+
+    await expect(
+      provider.search({
+        query: '수납함',
+        first: 3,
+        after: Buffer.from('0').toString('base64url'),
+      }),
+    ).rejects.toThrow('Invalid cursor');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('bounds provider request time and response size', async () => {
