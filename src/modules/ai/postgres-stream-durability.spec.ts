@@ -123,6 +123,43 @@ describe('PostgresStreamDurability', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('uses the internal first-event sentinel only for a fresh stream', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      null,
+    );
+
+    await expect(
+      durability.read('-1')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $3'), [
+      runId,
+      '0',
+      128,
+    ]);
+  });
+
+  it('rejects an external first-event sentinel before querying PostgreSQL', async () => {
+    const query = jest.fn();
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '-1',
+    );
+
+    await expect(
+      durability.read('-1')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('accepts the largest PostgreSQL replay offset', async () => {
     const query = jest
       .fn<

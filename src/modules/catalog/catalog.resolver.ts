@@ -1,7 +1,6 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { z } from 'zod';
 
-import { decodePageCursor } from '../../common/cursor.js';
 import type { ProductGraphql } from './catalog.mapper.js';
 import { productCursor, toProductGraphql } from './catalog.mapper.js';
 import { CatalogService } from './catalog.service.js';
@@ -33,7 +32,6 @@ export class CatalogResolver {
   ): Promise<ProductConnection> {
     const parsed = searchInputSchema.parse(input);
     const cursor = after ?? null;
-    decodePageCursor(cursor);
     const result = await this.catalog.search(parsed.query, first, cursor);
     const edges = result.items.map((product) => ({
       cursor: productCursor(product.id),

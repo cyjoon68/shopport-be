@@ -180,6 +180,21 @@ describe('CatalogProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('rejects an invalid page cursor before an empty search returns', async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    const provider = new CatalogProvider();
+    provider.useFetch(fetchImpl);
+
+    await expect(
+      provider.search({
+        query: ' ',
+        first: 3,
+        after: Buffer.from('0').toString('base64url'),
+      }),
+    ).rejects.toThrow('Invalid cursor');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('bounds provider request time and response size', async () => {
     let requestSignal: AbortSignal | null = null;
     const provider = new CatalogProvider();

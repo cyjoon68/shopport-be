@@ -39,8 +39,8 @@ const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener('abort', done, { once: true });
   });
 
-const offsetFor = (offset: string): bigint | null => {
-  if (offset === '-1') return 0n;
+const offsetFor = (offset: string, internal: boolean): bigint | null => {
+  if (offset === '-1' && internal) return 0n;
   const parsed = /^\d{1,19}$/u.test(offset) ? BigInt(offset) : null;
   return parsed !== null && parsed <= maximumSignedBigint ? parsed : null;
 };
@@ -72,7 +72,7 @@ export class PostgresStreamDurability implements StreamDurability {
     offset: string,
     signal?: AbortSignal,
   ): AsyncIterable<DurableEntry> => {
-    let cursor = offsetFor(offset);
+    let cursor = offsetFor(offset, this.resumeOffset === null);
     let buffered: Array<DurableEntry> = [];
     return {
       [Symbol.asyncIterator]: () => ({

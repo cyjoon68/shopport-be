@@ -183,11 +183,11 @@ export class CatalogProvider implements CatalogProviderContract {
   public search = async (
     input: CatalogSearchInput,
   ): Promise<CatalogSearchResult> => {
+    const page = decodePageCursor(input.after ?? null);
     const query = input.query.trim();
     if (query.length === 0) {
       return { items: [], endCursor: null, hasNextPage: false };
     }
-    const page = decodePageCursor(input.after ?? null);
     const size = Math.min(Math.max(input.first, 1), 20);
     const fetchSize = input.budgetMax === undefined ? size : 20;
     const providerId = input.providerId ?? 'daiso';

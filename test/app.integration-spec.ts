@@ -11,6 +11,7 @@ import request from 'supertest';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
+import { decodePageCursor } from '../src/common/cursor.js';
 import { DATABASE, DATABASE_POOL } from '../src/database/database.module.js';
 import type {
   AiStreamAdapter,
@@ -89,12 +90,14 @@ const integrationCatalogProvider: CatalogProvider = {
   providerId: 'integration',
   capabilities: ['LIVE_QUERY'],
   outboundHosts: ['www.daisomall.co.kr'],
-  search: () =>
-    Promise.resolve({
+  search: ({ after }) => {
+    decodePageCursor(after ?? null);
+    return Promise.resolve({
       items: [integrationProduct],
       endCursor: null,
       hasNextPage: false,
-    }),
+    });
+  },
 };
 
 const createIntegrationStream = async function* (

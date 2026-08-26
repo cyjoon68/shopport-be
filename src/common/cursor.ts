@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { z } from 'zod';
 
-const cursorPayloadSchema = z.object({
+const cursorPayloadSchema = z.strictObject({
   createdAt: z.iso.datetime(),
   id: z.uuid(),
 });
@@ -21,7 +21,7 @@ const decodeBase64url = (cursor: string): string => {
   if (!/^[A-Za-z0-9_-]*$/u.test(cursor)) return invalidCursor();
   const decoded = Buffer.from(cursor, 'base64url');
   if (decoded.toString('base64url') !== cursor) return invalidCursor();
-  return decoded.toString('utf8');
+  return new TextDecoder('utf-8', { fatal: true }).decode(decoded);
 };
 
 export const encodeCursor = (payload: CursorPayload): string =>
