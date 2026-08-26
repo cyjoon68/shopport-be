@@ -381,6 +381,9 @@ describe('Shopport API vertical flow', () => {
         nonce: 'deletion-pending identity',
       })
       .expect(200);
+    const accountCountBefore = await pool.query<{ count: string }>(
+      'select count(*)::text as count from accounts',
+    );
     const account = await pool.query<{ account_id: string }>(
       `select account_id
        from auth_identities
@@ -407,14 +410,13 @@ describe('Shopport API vertical flow', () => {
        where provider = 'kakao' and provider_subject = $1`,
       [deletionPendingIntegrationSubject],
     );
-    const accounts = await pool.query<{ count: string }>(
-      `select count(*)::text as count
-       from accounts
-       where id = $1`,
-      [accountId],
+    const accountCountAfter = await pool.query<{ count: string }>(
+      'select count(*)::text as count from accounts',
     );
     expect(identities.rows).toEqual([{ account_id: accountId }]);
-    expect(accounts.rows.at(0)?.count).toBe('1');
+    expect(accountCountAfter.rows.at(0)?.count).toBe(
+      accountCountBefore.rows.at(0)?.count,
+    );
   });
 
   it('rejects a malformed access token without exposing JWT errors', async () => {
