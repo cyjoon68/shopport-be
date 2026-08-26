@@ -189,18 +189,38 @@ export class AuthRepository {
   public revokeSession = async (
     id: string,
     expectedHash: string,
-  ): Promise<void> => {
-    await this.database
-      .update(authSessions)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(authSessions.id, id),
-          eq(authSessions.tokenHash, expectedHash),
-          isNull(authSessions.revokedAt),
-        ),
-      );
-  };
+  ): Promise<boolean> =>
+    this.database.transaction(async (transaction) => {
+      const sessions = await transaction
+        .select({ id: authSessions.id })
+        .from(authSessions)
+        .where(
+          and(
+            eq(authSessions.id, id),
+            eq(authSessions.tokenHash, expectedHash),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!sessions.at(0)) return false;
+      await transaction.execute(sql`
+        with recursive lineage as (
+          select ${authSessions.id} as id,
+                 ${authSessions.replacedBySessionId} as next_id
+          from ${authSessions}
+          where ${authSessions.id} = ${id}
+          union all
+          select child.id, child.replaced_by_session_id
+          from ${authSessions} child
+          inner join lineage parent on child.id = parent.next_id
+        )
+        update ${authSessions}
+        set revoked_at = coalesce(${authSessions.revokedAt}, now()),
+            updated_at = now()
+        where ${authSessions.id} in (select id from lineage)
+      `);
+      return true;
+    });
 
   public revokeAccountSessions = async (accountId: string): Promise<void> => {
     await this.database

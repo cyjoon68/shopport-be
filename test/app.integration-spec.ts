@@ -11,7 +11,7 @@ import request from 'supertest';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
-import { DATABASE } from '../src/database/database.module.js';
+import { DATABASE, DATABASE_POOL } from '../src/database/database.module.js';
 import type {
   AiStreamAdapter,
   AiStreamInput,
@@ -215,11 +215,12 @@ describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
   let accessToken: string;
-  let refreshToken: string;
   let conversationId: string;
   let completedRunId: string;
   let baseUrl: string;
   let pool: Pool;
+  let appPool: Pool;
+  let resolveAuthBarrier: ((message: string) => void) | undefined;
   let workerModule: TestingModule;
   let staleRunRecovery: StaleRunRecovery;
   let archiveWriter: ArchiveWriter;
@@ -255,6 +256,12 @@ describe('Shopport API vertical flow', () => {
     process.env.NORMALIZED_ASSET_BUCKET = 'integration-normalized';
     process.env.ARCHIVE_BUCKET = 'integration-archive';
     pool = new Pool({ connectionString: postgres.getConnectionUri() });
+    appPool = new Pool({ connectionString: postgres.getConnectionUri() });
+    appPool.on('connect', (client) => {
+      client.on('notice', ({ message }) => {
+        if (message) resolveAuthBarrier?.(message);
+      });
+    });
     poolInitialized = true;
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
@@ -276,6 +283,8 @@ describe('Shopport API vertical flow', () => {
     const module = await Test.createTestingModule({
       imports: [AppModule],
     })
+      .overrideProvider(DATABASE_POOL)
+      .useValue(appPool)
       .overrideProvider(ProviderTokenVerifier)
       .useValue({
         verify: (
@@ -463,7 +472,6 @@ describe('Shopport API vertical flow', () => {
       .expect(200);
     const login = loginSchema.parse(loginResponse.body);
     accessToken = login.accessToken;
-    refreshToken = login.refreshToken;
 
     const conversationResponse = await request(baseUrl)
       .post('/graphql')
@@ -997,8 +1005,224 @@ describe('Shopport API vertical flow', () => {
     expect(events.rows.map(({ id }) => id)).toEqual([retainedId]);
   });
 
+  it('rejects every token when refresh and logout contend in either lock order', async () => {
+    const refreshWinnerLogin = loginSchema.parse(
+      (
+        await request(baseUrl).post('/v1/auth/kakao').send({
+          identityToken: integrationIdentityToken,
+          nonce: 'refresh-wins',
+        })
+      ).body,
+    );
+    const logoutWinnerLogin = loginSchema.parse(
+      (
+        await request(baseUrl).post('/v1/auth/kakao').send({
+          identityToken: integrationIdentityToken,
+          nonce: 'logout-wins',
+        })
+      ).body,
+    );
+    const unrelatedLogin = loginSchema.parse(
+      (
+        await request(baseUrl).post('/v1/auth/kakao').send({
+          identityToken: integrationIdentityToken,
+          nonce: 'second-account',
+        })
+      ).body,
+    );
+    const [refreshWinnerSessionId] = refreshWinnerLogin.refreshToken.split('.');
+    const [logoutWinnerSessionId] = logoutWinnerLogin.refreshToken.split('.');
+    const [unrelatedSessionId] = unrelatedLogin.refreshToken.split('.');
+    if (
+      !refreshWinnerSessionId ||
+      !logoutWinnerSessionId ||
+      !unrelatedSessionId
+    ) {
+      throw new Error('Expected refresh token session IDs');
+    }
+    const account = await pool.query<{ account_id: string }>(
+      'select account_id from auth_sessions where id = $1',
+      [refreshWinnerSessionId],
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected refresh winner account');
+
+    const refreshWins = await (async (): Promise<
+      Readonly<{
+        logoutStatus: number;
+        refreshStatus: number;
+        tokens: z.infer<typeof loginSchema>;
+      }>
+    > => {
+      const blocker = await pool.connect();
+      try {
+        await pool.query(`
+          create or replace function auth_session_refresh_barrier()
+          returns trigger language plpgsql as $$
+          begin
+            raise notice 'refresh-lock-held';
+            perform pg_advisory_xact_lock(73001);
+            return new;
+          end
+          $$;
+          create trigger auth_session_refresh_barrier
+          before insert on auth_sessions
+          for each row
+          when (new.account_id = '${accountId}'::uuid)
+          execute function auth_session_refresh_barrier()
+        `);
+        await blocker.query('select pg_advisory_lock(73001)');
+        const barrierReached = new Promise<void>((resolve) => {
+          resolveAuthBarrier = (message): void => {
+            if (message === 'refresh-lock-held') resolve();
+          };
+        });
+        const refreshRequest = request(baseUrl)
+          .post('/v1/auth/refresh')
+          .send({ refreshToken: refreshWinnerLogin.refreshToken })
+          .then((response) => response);
+        await barrierReached;
+        const logoutRequest = request(baseUrl)
+          .post('/v1/auth/logout')
+          .send({ refreshToken: refreshWinnerLogin.refreshToken })
+          .then((response) => response);
+        await blocker.query('select pg_advisory_unlock(73001)');
+        const [refreshResponse, logoutResponse] = await Promise.all([
+          refreshRequest,
+          logoutRequest,
+        ]);
+        return {
+          logoutStatus: logoutResponse.status,
+          refreshStatus: refreshResponse.status,
+          tokens: loginSchema.parse(refreshResponse.body),
+        };
+      } finally {
+        resolveAuthBarrier = undefined;
+        await blocker.query('select pg_advisory_unlock(73001)');
+        blocker.release();
+        await pool.query(`
+          drop trigger if exists auth_session_refresh_barrier on auth_sessions;
+          drop function if exists auth_session_refresh_barrier()
+        `);
+      }
+    })();
+
+    const logoutWins = await (async (): Promise<
+      Readonly<{ logoutStatus: number; refreshStatus: number }>
+    > => {
+      const blocker = await pool.connect();
+      try {
+        await pool.query(`
+          create or replace function auth_session_logout_barrier()
+          returns trigger language plpgsql as $$
+          begin
+            raise notice 'logout-lock-held';
+            perform pg_advisory_xact_lock(73002);
+            return new;
+          end
+          $$;
+          create trigger auth_session_logout_barrier
+          before update on auth_sessions
+          for each row
+          when (
+            old.id = '${logoutWinnerSessionId}'::uuid
+            and old.revoked_at is null
+            and new.revoked_at is not null
+          )
+          execute function auth_session_logout_barrier()
+        `);
+        await blocker.query('select pg_advisory_lock(73002)');
+        const barrierReached = new Promise<void>((resolve) => {
+          resolveAuthBarrier = (message): void => {
+            if (message === 'logout-lock-held') resolve();
+          };
+        });
+        const logoutRequest = request(baseUrl)
+          .post('/v1/auth/logout')
+          .send({ refreshToken: logoutWinnerLogin.refreshToken })
+          .then((response) => response);
+        await barrierReached;
+        const refreshRequest = request(baseUrl)
+          .post('/v1/auth/refresh')
+          .send({ refreshToken: logoutWinnerLogin.refreshToken })
+          .then((response) => response);
+        await blocker.query('select pg_advisory_unlock(73002)');
+        const [logoutResponse, refreshResponse] = await Promise.all([
+          logoutRequest,
+          refreshRequest,
+        ]);
+        return {
+          logoutStatus: logoutResponse.status,
+          refreshStatus: refreshResponse.status,
+        };
+      } finally {
+        resolveAuthBarrier = undefined;
+        await blocker.query('select pg_advisory_unlock(73002)');
+        blocker.release();
+        await pool.query(`
+          drop trigger if exists auth_session_logout_barrier on auth_sessions;
+          drop function if exists auth_session_logout_barrier()
+        `);
+      }
+    })();
+
+    expect(refreshWins.refreshStatus).toBe(200);
+    expect(refreshWins.logoutStatus).toBe(204);
+    expect(logoutWins.logoutStatus).toBe(204);
+    expect(logoutWins.refreshStatus).toBe(401);
+
+    const rejectedAccessTokens = [
+      refreshWinnerLogin.accessToken,
+      refreshWins.tokens.accessToken,
+      logoutWinnerLogin.accessToken,
+    ];
+    for (const token of rejectedAccessTokens) {
+      await request(baseUrl)
+        .post('/graphql')
+        .set('authorization', `Bearer ${token}`)
+        .send({ query: '{ viewer { id } }' })
+        .expect(200)
+        .expect(({ text }) => {
+          expect(text).toContain('UNAUTHENTICATED');
+        });
+    }
+    const rejectedRefreshTokens = [
+      refreshWinnerLogin.refreshToken,
+      refreshWins.tokens.refreshToken,
+      logoutWinnerLogin.refreshToken,
+    ];
+    for (const token of rejectedRefreshTokens) {
+      await request(baseUrl)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: token })
+        .expect(401);
+    }
+
+    await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', `Bearer ${unrelatedLogin.accessToken}`)
+      .send({ query: '{ viewer { id } }' })
+      .expect(200)
+      .expect(({ text }) => {
+        expect(text).not.toContain('UNAUTHENTICATED');
+      });
+    const unrelatedSession = await pool.query<{ revoked_at: Date | null }>(
+      'select revoked_at from auth_sessions where id = $1',
+      [unrelatedSessionId],
+    );
+    expect(unrelatedSession.rows.at(0)?.revoked_at).toBeNull();
+  }, 30_000);
+
   it('revokes the access session on logout', async () => {
-    const [sessionId, secret] = refreshToken.split('.');
+    const logoutLogin = loginSchema.parse(
+      (
+        await request(baseUrl).post('/v1/auth/kakao').send({
+          identityToken: integrationIdentityToken,
+          nonce: 'logout-idempotency',
+        })
+      ).body,
+    );
+    const [sessionId, secret] = logoutLogin.refreshToken.split('.');
     if (!sessionId || !secret) throw new Error('Expected refresh token parts');
     const wrongSecret = `${secret.startsWith('A') ? 'B' : 'A'}${secret.slice(1)}`;
 
@@ -1016,7 +1240,7 @@ describe('Shopport API vertical flow', () => {
       .expect(204);
     await request(baseUrl)
       .post('/graphql')
-      .set('authorization', `Bearer ${accessToken}`)
+      .set('authorization', `Bearer ${logoutLogin.accessToken}`)
       .send({ query: '{ viewer { id } }' })
       .expect(200)
       .expect(({ text }) => {
@@ -1025,11 +1249,11 @@ describe('Shopport API vertical flow', () => {
 
     await request(baseUrl)
       .post('/v1/auth/logout')
-      .send({ refreshToken })
+      .send({ refreshToken: logoutLogin.refreshToken })
       .expect(204);
     await request(baseUrl)
       .post('/graphql')
-      .set('authorization', `Bearer ${accessToken}`)
+      .set('authorization', `Bearer ${logoutLogin.accessToken}`)
       .send({ query: '{ viewer { id } }' })
       .expect(200)
       .expect(({ text }) => {
