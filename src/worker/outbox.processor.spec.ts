@@ -29,23 +29,29 @@ describe('OutboxProcessor failure isolation', () => {
       },
     ];
     const updates: Array<Record<string, unknown>> = [];
-    const database = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(() => Promise.resolve(events)),
+    const select = jest.fn(() => ({
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({
+          orderBy: jest.fn(() => ({
+            limit: jest.fn(() => ({
+              for: jest.fn(() => Promise.resolve(events)),
             })),
           })),
         })),
       })),
-      update: jest.fn(() => ({
-        set: jest.fn((value: Record<string, unknown>) => {
-          updates.push(value);
-          return { where: jest.fn(() => Promise.resolve()) };
-        }),
-      })),
-    } as unknown as Database;
+    }));
+    const update = jest.fn(() => ({
+      set: jest.fn((value: Record<string, unknown>) => {
+        updates.push(value);
+        return { where: jest.fn(() => Promise.resolve()) };
+      }),
+    }));
+    const database = { select, update } as unknown as Database;
+    const transaction = jest.fn(
+      <T>(callback: (value: Database) => Promise<T>): Promise<T> =>
+        callback(database),
+    );
+    Object.assign(database, { transaction });
     const deleteKey = jest.fn((_bucket: string, key: string) =>
       key === 'fail'
         ? Promise.reject(new Error('S3 unavailable'))
@@ -59,8 +65,15 @@ describe('OutboxProcessor failure isolation', () => {
 
     expect(deleteKey).toHaveBeenCalledTimes(2);
     expect(updates).toEqual([
-      expect.objectContaining({ attemptCount: 1 }),
-      expect.objectContaining({ publishedAt: expect.any(Date) }),
+      expect.objectContaining({
+        lockedBy: expect.any(String),
+        lockedUntil: expect.anything(),
+      }),
+      expect.objectContaining({ attemptCount: 1, lockedBy: null }),
+      expect.objectContaining({
+        lockedBy: null,
+        publishedAt: expect.any(Date),
+      }),
     ]);
   });
 });

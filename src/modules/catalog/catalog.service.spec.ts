@@ -1,3 +1,6 @@
+import { jest } from '@jest/globals';
+
+import type { CatalogRepository } from './catalog.repository.js';
 import { CatalogService } from './catalog.service.js';
 import type { CatalogProduct, CatalogProvider } from './types.js';
 
@@ -32,11 +35,44 @@ describe('CatalogService outbound policy', () => {
           endCursor: null,
           hasNextPage: false,
         }),
-      getProduct: () => Promise.resolve(product),
     };
-    const catalog = new CatalogService(provider);
+    const catalog = new CatalogService(provider, {
+      get: () => Promise.resolve(null),
+      getMany: () => Promise.resolve([]),
+      save: () => Promise.resolve(),
+    } as unknown as CatalogRepository);
     await expect(catalog.search('상품', 20, null)).rejects.toThrow(
       'Provider returned a non-allowlisted outbound URL',
     );
+  });
+
+  it('returns a validated durable catalog record', async () => {
+    const cachedProduct = {
+      ...product,
+      outboundUrl: 'https://shop.example/purchase',
+    };
+    const save = jest.fn(() => Promise.resolve());
+    const provider: CatalogProvider = {
+      providerId: 'test',
+      capabilities: ['LIVE_QUERY'],
+      outboundHosts: ['shop.example'],
+      search: () =>
+        Promise.resolve({
+          items: [],
+          endCursor: null,
+          hasNextPage: false,
+        }),
+    };
+    const catalog = new CatalogService(provider, {
+      get: () => Promise.resolve(cachedProduct),
+      getMany: () => Promise.resolve([]),
+      save,
+    } as unknown as CatalogRepository);
+
+    await expect(catalog.getProduct(product.id)).resolves.toEqual({
+      ...cachedProduct,
+      outboundUrl: 'https://shop.example/purchase',
+    });
+    expect(save).not.toHaveBeenCalled();
   });
 });

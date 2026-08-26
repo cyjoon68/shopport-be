@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 
+import { CatalogRepository } from './catalog.repository.js';
 import { CATALOG_PROVIDER } from './catalog.tokens.js';
 import type {
   CatalogProduct,
@@ -12,6 +13,7 @@ import type {
 export class CatalogService {
   public constructor(
     @Inject(CATALOG_PROVIDER) private readonly provider: CatalogProvider,
+    private readonly repository: CatalogRepository,
   ) {}
 
   public search = async (
@@ -29,18 +31,22 @@ export class CatalogService {
       after,
       ...filters,
     });
-    return { ...result, items: result.items.map(this.validateProduct) };
+    const items = result.items.map(this.validateProduct);
+    await this.repository.save(items);
+    return { ...result, items };
   };
 
   public getProduct = async (id: string): Promise<CatalogProduct | null> => {
-    const product = await this.provider.getProduct(id);
-    return product ? this.validateProduct(product) : null;
+    const cached = await this.repository.get(id);
+    return cached ? this.validateProduct(cached) : null;
   };
 
   public getProducts = async (
     ids: ReadonlyArray<string>,
   ): Promise<ReadonlyArray<CatalogProduct | null>> =>
-    Promise.all(ids.map((id) => this.getProduct(id)));
+    (await this.repository.getMany(ids)).map((product) =>
+      product ? this.validateProduct(product) : null,
+    );
 
   private readonly validateProduct = (
     product: CatalogProduct,

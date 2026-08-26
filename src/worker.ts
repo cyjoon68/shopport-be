@@ -4,71 +4,79 @@ import { NestFactory } from '@nestjs/core';
 
 import { ArchiveWriter } from './modules/archive/archive.writer.js';
 import { AssetResultConsumer } from './worker/asset-result.consumer.js';
-import { OutboxProcessor } from './worker/outbox.processor.js';
+import { RetentionCleanup } from './worker/retention-cleanup.js';
 import { StaleRunRecovery } from './worker/stale-run-recovery.js';
 import { WorkerModule } from './worker/worker.module.js';
+import { delay, report } from './worker/worker-process.js';
 
 const recoveryCadenceMilliseconds = 30_000;
+const retentionCadenceMilliseconds = 300_000;
 
-const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
+const runMaintenance = async (
+  assets: AssetResultConsumer,
+  archives: ArchiveWriter,
+  staleRuns: StaleRunRecovery,
+  retention: RetentionCleanup,
+  signal: AbortSignal,
+): Promise<void> => {
+  let nextRecoveryAt = 0;
+  let nextRetentionAt = 0;
+  while (!signal.aborted) {
+    const recoveryDue = Date.now() >= nextRecoveryAt;
+    const retentionDue = Date.now() >= nextRetentionAt;
+    if (recoveryDue) nextRecoveryAt = Date.now() + recoveryCadenceMilliseconds;
+    if (retentionDue)
+      nextRetentionAt = Date.now() + retentionCadenceMilliseconds;
+    const results = await Promise.allSettled([
+      assets.consume(),
+      archives.archive(),
+      recoveryDue ? staleRuns.recover() : Promise.resolve(0),
+      retentionDue ? retention.cleanup() : Promise.resolve(),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        report('Worker task failed', result.reason);
+      }
     }
-    const complete = (): void => {
-      signal.removeEventListener('abort', complete);
-      clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = setTimeout(complete, milliseconds);
-    signal.addEventListener('abort', complete, { once: true });
-  });
+    const assetWork = results[0].status === 'fulfilled' && results[0].value;
+    const archiveWork = results[1].status === 'fulfilled' && results[1].value;
+    const recoveredRuns =
+      results[2].status === 'fulfilled' ? results[2].value : 0;
+    if (!assetWork && !archiveWork && recoveredRuns === 0) {
+      await delay(500, signal);
+    }
+  }
+};
 
 const bootstrap = async (): Promise<void> => {
   const app = await NestFactory.createApplicationContext(WorkerModule);
   const assets = app.get(AssetResultConsumer);
-  const outbox = app.get(OutboxProcessor);
   const archives = app.get(ArchiveWriter);
+  const retention = app.get(RetentionCleanup);
   const staleRuns = app.get(StaleRunRecovery);
   const controller = new AbortController();
-  let nextRecoveryAt = 0;
   const stop = (): void => {
     controller.abort();
   };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
-  while (!controller.signal.aborted) {
-    const recoveryDue = Date.now() >= nextRecoveryAt;
-    if (recoveryDue) nextRecoveryAt = Date.now() + recoveryCadenceMilliseconds;
-    const results = await Promise.allSettled([
-      assets.consume(),
-      outbox.process(),
-      archives.archive(),
-      recoveryDue ? staleRuns.recover() : Promise.resolve(0),
-    ]);
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        process.stderr.write(
-          `${result.reason instanceof Error ? result.reason.message : 'Worker task failed'}\n`,
-        );
-      }
-    }
-    const assetWork = results[0].status === 'fulfilled' && results[0].value;
-    const outboxWork = results[1].status === 'fulfilled' && results[1].value;
-    const archiveWork = results[2].status === 'fulfilled' && results[2].value;
-    const recoveredRuns =
-      results[3].status === 'fulfilled' ? results[3].value : 0;
-    if (!assetWork && !outboxWork && !archiveWork && recoveredRuns === 0) {
-      await delay(500, controller.signal);
-    }
+  try {
+    await runMaintenance(
+      assets,
+      archives,
+      staleRuns,
+      retention,
+      controller.signal,
+    );
+  } finally {
+    controller.abort();
+    process.off('SIGTERM', stop);
+    process.off('SIGINT', stop);
+    await app.close();
   }
-  await app.close();
 };
 
 bootstrap().catch((error: unknown) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : 'Worker failed'}\n`,
-  );
+  report('Worker failed', error);
   process.exitCode = 1;
 });
