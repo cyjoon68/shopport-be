@@ -920,6 +920,73 @@ describe('Shopport API vertical flow', () => {
     expect(statuses.get(cancelledRunId)).toBe('cancelled');
   }, 30_000);
 
+  it('AI maintenance advisory lock prevents a second worker pass', async () => {
+    const owner = await createAiOwner();
+    const staleRunId = uuidv7();
+    const eventRunId = uuidv7();
+    const now = new Date();
+    const expired = new Date(now.getTime() - 60_000);
+    const blocker = await pool.connect();
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $5),
+              ($6, $2, $3, 'completed', $4, $4, $4)`,
+      [
+        staleRunId,
+        owner.accountId,
+        owner.conversationId,
+        expired,
+        expired,
+        eventRunId,
+      ],
+    );
+    await pool.query(
+      `insert into ai_run_events (run_id, chunk, expires_at)
+       values ($1, $2, $3)`,
+      [eventRunId, JSON.stringify({ type: 'text' }), expired],
+    );
+    await pool.query(
+      `insert into rate_limits (key, hits, window_expires_at, blocked_until)
+       values ('ai-maintenance-lock', 1, $1, null)`,
+      [expired],
+    );
+    try {
+      await blocker.query('begin');
+      await blocker.query(
+        "select pg_advisory_xact_lock(hashtextextended('shopport.ai-maintenance', 0))",
+      );
+
+      await expect(staleRunRecovery.recover()).resolves.toBe(0);
+      await expect(
+        pool.query(
+          `select (select status from ai_runs where id = $1) as status,
+                  (select count(*)::int from ai_run_events where run_id = $2) as events,
+                  (select count(*)::int from rate_limits where key = 'ai-maintenance-lock') as rates`,
+          [staleRunId, eventRunId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ status: 'reserved', events: 1, rates: 1 }],
+      });
+
+      await blocker.query('commit');
+      await expect(staleRunRecovery.recover()).resolves.toBe(1);
+      await expect(
+        pool.query(
+          `select (select status from ai_runs where id = $1) as status,
+                  (select count(*)::int from ai_run_events where run_id = $2) as events,
+                  (select count(*)::int from rate_limits where key = 'ai-maintenance-lock') as rates`,
+          [staleRunId, eventRunId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ status: 'failed', events: 0, rates: 0 }],
+      });
+    } finally {
+      await blocker.query('rollback');
+      blocker.release();
+    }
+  }, 30_000);
+
   it('uses archive storage and purges each split bucket', async () => {
     const account = await pool.query<{ account_id: string }>(
       `select account_id

@@ -4,19 +4,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
 import {
-  aiRunEvents,
   aiRuns,
   assets,
   conversations,
   messageParts,
   messages,
-  rateLimits,
 } from '../../database/schema.js';
 import { DEFAULT_CONVERSATION_TITLE } from '../conversations/conversation.types.js';
 import type { AiProviderId } from './ai-request.js';
@@ -434,56 +432,5 @@ export class AiRepository {
       .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
       .returning({ id: aiRuns.id });
     if (updated.length !== 1) throw new ConflictException('AI run lease lost');
-  };
-
-  public recoverStaleReservedRuns = (now = new Date()): Promise<number> =>
-    this.database.transaction(async (transaction) => {
-      const heartbeatCutoff = new Date(now.getTime() - 120_000);
-      const staleRuns = await transaction
-        .select({ id: aiRuns.id })
-        .from(aiRuns)
-        .where(
-          and(
-            eq(aiRuns.status, 'reserved'),
-            or(
-              lte(aiRuns.deadlineAt, now),
-              lte(aiRuns.heartbeatAt, heartbeatCutoff),
-            ),
-          ),
-        )
-        .for('update', { skipLocked: true });
-      let recovered = 0;
-      for (const stale of staleRuns) {
-        const runs = await transaction
-          .update(aiRuns)
-          .set({
-            status: 'failed',
-            completedAt: now,
-            streamClosedAt: now,
-          })
-          .where(and(eq(aiRuns.id, stale.id), eq(aiRuns.status, 'reserved')))
-          .returning({ id: aiRuns.id });
-        const run = runs.at(0);
-        if (!run) continue;
-        recovered += 1;
-      }
-      return recovered;
-    });
-
-  public cleanupRuntimeState = async (now = new Date()): Promise<void> => {
-    await Promise.all([
-      this.database.delete(aiRunEvents).where(lte(aiRunEvents.expiresAt, now)),
-      this.database
-        .delete(rateLimits)
-        .where(
-          and(
-            lte(rateLimits.windowExpiresAt, now),
-            or(
-              isNull(rateLimits.blockedUntil),
-              lte(rateLimits.blockedUntil, now),
-            ),
-          ),
-        ),
-    ]);
   };
 }
