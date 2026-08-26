@@ -209,6 +209,7 @@ const parseStreamChunks = (
 const integrationIdentityToken = 'integration-kakao-token';
 const integrationSubject = 'integration-kakao';
 const secondIntegrationSubject = 'integration-kakao-second';
+const deletionPendingIntegrationSubject = 'integration-kakao-deletion-pending';
 
 describe('Shopport API vertical flow', () => {
   let app: INestApplication;
@@ -287,7 +288,9 @@ describe('Shopport API vertical flow', () => {
             subject:
               nonce === 'second-account'
                 ? secondIntegrationSubject
-                : integrationSubject,
+                : nonce === 'deletion-pending identity'
+                  ? deletionPendingIntegrationSubject
+                  : integrationSubject,
             displayName: '통합 테스트 사용자',
             profileImageUrl: null,
           }),
@@ -368,6 +371,50 @@ describe('Shopport API vertical flow', () => {
       count: '1',
       display_name: '통합 테스트 사용자',
     });
+  });
+
+  it('rejects a deletion-pending identity without creating a duplicate', async () => {
+    await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'deletion-pending identity',
+      })
+      .expect(200);
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = $1`,
+      [deletionPendingIntegrationSubject],
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected deletion-pending account');
+    await pool.query('update accounts set deleted_at = now() where id = $1', [
+      accountId,
+    ]);
+
+    await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'deletion-pending identity',
+      })
+      .expect(409);
+
+    const identities = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = $1`,
+      [deletionPendingIntegrationSubject],
+    );
+    const accounts = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+       from accounts
+       where id = $1`,
+      [accountId],
+    );
+    expect(identities.rows).toEqual([{ account_id: accountId }]);
+    expect(accounts.rows.at(0)?.count).toBe('1');
   });
 
   it('rejects a malformed access token without exposing JWT errors', async () => {

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
@@ -38,6 +38,7 @@ export class AuthRepository {
       const existing = await transaction
         .select({
           accountId: accounts.id,
+          deletedAt: accounts.deletedAt,
           displayName: accounts.displayName,
           profileImageUrl: accounts.profileImageUrl,
         })
@@ -47,12 +48,15 @@ export class AuthRepository {
           and(
             eq(authIdentities.provider, identity.provider),
             eq(authIdentities.providerSubject, identity.subject),
-            isNull(accounts.deletedAt),
           ),
         )
         .limit(1);
       const account = existing.at(0);
-      if (account) return account;
+      if (account) {
+        if (account.deletedAt)
+          throw new ConflictException('Account deletion is pending');
+        return account;
+      }
 
       const accountId = uuidv7();
       await transaction.insert(accounts).values({

@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import { ConflictException } from '@nestjs/common';
 
 import type { Database } from '../../database/database.module.js';
 import { AuthRepository } from './auth.repository.js';
@@ -60,5 +61,57 @@ describe('AuthRepository refresh replay handling', () => {
 
     expect(transaction.update).not.toHaveBeenCalled();
     expect(transaction.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthRepository account creation', () => {
+  it('rejects a deletion-pending identity without inserts', async () => {
+    const locked = jest
+      .fn<
+        () => Promise<
+          Array<{
+            accountId: string;
+            deletedAt: Date;
+            displayName: string;
+            profileImageUrl: string | null;
+          }>
+        >
+      >()
+      .mockResolvedValue([
+        {
+          accountId: '0198a122-0c00-7000-8000-000000000001',
+          deletedAt: new Date('2026-08-26T00:00:00.000Z'),
+          displayName: '탈퇴 대기 사용자',
+          profileImageUrl: null,
+        },
+      ]);
+    const transaction = {
+      execute: jest.fn(() => Promise.resolve()),
+      insert: jest.fn(),
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          innerJoin: jest.fn(() => ({
+            where: jest.fn(() => ({ limit: locked })),
+          })),
+        })),
+      })),
+    };
+    const database = {
+      transaction: (
+        callback: (value: typeof transaction) => Promise<unknown>,
+      ): Promise<unknown> => callback(transaction),
+    } as unknown as Database;
+    const repository = new AuthRepository(database);
+
+    await expect(
+      repository.findOrCreateAccount({
+        displayName: '통합 테스트 사용자',
+        profileImageUrl: null,
+        provider: 'kakao',
+        subject: 'deletion-pending-subject',
+      }),
+    ).rejects.toEqual(new ConflictException('Account deletion is pending'));
+
+    expect(transaction.insert).not.toHaveBeenCalled();
   });
 });
