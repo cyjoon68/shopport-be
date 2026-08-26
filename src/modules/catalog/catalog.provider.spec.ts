@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 
+import { fetchCatalogJson } from './catalog-http.js';
 import { CatalogProvider } from './catalog.provider.js';
 
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -261,6 +262,42 @@ describe('CatalogProvider dispatch and ranking', () => {
 });
 
 describe('CatalogProvider bounded HTTP', () => {
+  it('cancels a non-OK response body without masking the stable error', async () => {
+    const cancel = jest
+      .fn<() => Promise<void>>()
+      .mockRejectedValue(new Error('cancel failed'));
+    const body = new ReadableStream<Uint8Array>({ cancel });
+
+    await expect(
+      fetchCatalogJson(
+        () => Promise.resolve(new Response(body, { status: 503 })),
+        new URL('https://example.com/catalog'),
+      ),
+    ).rejects.toThrow('Catalog request failed: 503');
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a declared oversized body without masking the stable error', async () => {
+    const cancel = jest
+      .fn<() => Promise<void>>()
+      .mockRejectedValue(new Error('cancel failed'));
+    const body = new ReadableStream<Uint8Array>({ cancel });
+
+    await expect(
+      fetchCatalogJson(
+        () =>
+          Promise.resolve(
+            new Response(body, {
+              headers: { 'content-length': '1048577' },
+              status: 200,
+            }),
+          ),
+        new URL('https://example.com/catalog'),
+      ),
+    ).rejects.toThrow('Catalog response too large');
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates provider failures instead of returning an empty result', async () => {
     const provider = new CatalogProvider();
     provider.useFetch(() =>

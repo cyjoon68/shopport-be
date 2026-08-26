@@ -1,6 +1,9 @@
 const providerTimeoutMilliseconds = 10_000;
 const maximumResponseBytes = 1024 * 1024;
 
+const cancelBody = (response: Response): Promise<void> =>
+  response.body?.cancel().catch(() => undefined) ?? Promise.resolve();
+
 export const fetchCatalogJson = async (
   fetchImpl: typeof fetch,
   url: URL,
@@ -10,6 +13,7 @@ export const fetchCatalogJson = async (
     signal: AbortSignal.timeout(providerTimeoutMilliseconds),
   });
   if (!response.ok) {
+    await cancelBody(response);
     throw new Error(`Catalog request failed: ${String(response.status)}`);
   }
   const declaredLength = response.headers.get('content-length');
@@ -17,6 +21,7 @@ export const fetchCatalogJson = async (
     declaredLength !== null &&
     Number(declaredLength) > maximumResponseBytes
   ) {
+    await cancelBody(response);
     throw new Error('Catalog response too large');
   }
   if (!response.body) throw new Error('Catalog response has no body');
