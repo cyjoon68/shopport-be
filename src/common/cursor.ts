@@ -21,7 +21,11 @@ const decodeBase64url = (cursor: string): string => {
   if (!/^[A-Za-z0-9_-]*$/u.test(cursor)) return invalidCursor();
   const decoded = Buffer.from(cursor, 'base64url');
   if (decoded.toString('base64url') !== cursor) return invalidCursor();
-  return new TextDecoder('utf-8', { fatal: true }).decode(decoded);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(decoded);
+  } catch {
+    return invalidCursor();
+  }
 };
 
 export const encodeCursor = (payload: CursorPayload): string =>

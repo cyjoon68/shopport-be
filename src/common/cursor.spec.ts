@@ -42,6 +42,7 @@ describe('cursor decoding', () => {
   it('rejects zero and fractional page cursors', () => {
     for (const cursor of [
       'Mw==',
+      Buffer.from([0xc3, 0x28]).toString('base64url'),
       Buffer.from('0').toString('base64url'),
       Buffer.from('1.5').toString('base64url'),
       Buffer.from('9007199254740992').toString('base64url'),
