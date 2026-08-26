@@ -9,6 +9,8 @@ import type { ShoppingDeepModeAssessment } from './shopping-deep-mode.js';
 import { shoppingRequestKinds } from './shopping-deep-mode.js';
 import {
   type AiProductRecommendation,
+  type AiStreamResult,
+  type AskUser,
   clarificationDimensions,
 } from './types.js';
 
@@ -121,22 +123,22 @@ export type DeepModeState = {
   searchedProducts: boolean;
 };
 
-export const recommendationToolChoice = {
+const recommendationToolChoice = {
   type: 'function',
   function: { name: 'recordProductRecommendations' },
 };
 
-export const askUserToolChoice = {
+const askUserToolChoice = {
   type: 'function',
   function: { name: 'askUser' },
 };
 
-export const searchProductsToolChoice = {
+const searchProductsToolChoice = {
   type: 'function',
   function: { name: 'searchProducts' },
 };
 
-export const ambiguityAssessmentToolChoice = {
+const ambiguityAssessmentToolChoice = {
   type: 'function',
   function: { name: 'assessShoppingAmbiguity' },
 };
@@ -154,6 +156,87 @@ export const providerConstraintPrompt = (
 export const expectedProductIds = (
   state: ProductRecommendationState,
 ): ReadonlyArray<string> => [...state.productIds];
+
+const recommendationsComplete = (state: ProductRecommendationState): boolean =>
+  state.productIds.size === 0 ||
+  expectedProductIds(state).every((productId) =>
+    state.aiSummaries.has(productId),
+  );
+
+const productRecommendations = (
+  state: ProductRecommendationState,
+): ReadonlyArray<AiProductRecommendation> =>
+  expectedProductIds(state).flatMap((productId) => {
+    const aiSummary = state.aiSummaries.get(productId);
+    return aiSummary ? [{ productId, aiSummary }] : [];
+  });
+
+export const nextToolChoice = (
+  recommendationState: ProductRecommendationState,
+  deepModeState: DeepModeState,
+  askUser: AskUser | null,
+):
+  | typeof ambiguityAssessmentToolChoice
+  | typeof askUserToolChoice
+  | typeof searchProductsToolChoice
+  | typeof recommendationToolChoice
+  | null => {
+  if (askUser) return null;
+  if (deepModeState.assessmentRequired && !deepModeState.assessment) {
+    return ambiguityAssessmentToolChoice;
+  }
+  if (deepModeState.assessment?.clarificationDimension) {
+    return askUserToolChoice;
+  }
+  if (
+    deepModeState.assessment?.requestKind === 'shopping' &&
+    !deepModeState.searchedProducts
+  ) {
+    return searchProductsToolChoice;
+  }
+  return recommendationsComplete(recommendationState)
+    ? null
+    : recommendationToolChoice;
+};
+
+export const providerStreamResult = (
+  finishReason: string | null,
+  content: string,
+  recommendationState: ProductRecommendationState,
+  deepModeState: DeepModeState,
+  askUser: AskUser | null,
+  assistantMessageId: string,
+): AiStreamResult | null => {
+  const text = content.trim();
+  const needsAssessment =
+    deepModeState.assessmentRequired && !deepModeState.assessment;
+  const needsClarification =
+    deepModeState.assessment !== null &&
+    deepModeState.assessment.clarificationDimension !== null;
+  const needsSearch =
+    deepModeState.assessment?.requestKind === 'shopping' &&
+    !needsClarification &&
+    !deepModeState.searchedProducts;
+  if (
+    !askUser &&
+    (needsAssessment ||
+      needsClarification ||
+      needsSearch ||
+      finishReason !== 'stop' ||
+      text.length === 0 ||
+      !recommendationsComplete(recommendationState))
+  ) {
+    return null;
+  }
+  return {
+    messageId: assistantMessageId,
+    text: askUser ? '' : text,
+    productRecommendations: askUser
+      ? []
+      : productRecommendations(recommendationState),
+    askUser,
+  };
+};
 
 export const matchesExpectedProducts = (
   recommendations: ReadonlyArray<AiProductRecommendation>,

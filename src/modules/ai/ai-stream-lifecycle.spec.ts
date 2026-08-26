@@ -85,7 +85,7 @@ describe('AI stream lifecycle', () => {
     ).toBe('지성 피부에 맞는 쿠션 파운데이션 추천입니다');
   });
 
-  it('progresses tool choice through assessment, clarification, search, and recommendations', () => {
+  it('progresses tool choice through assessment, clarification, search, and recommendations', async () => {
     const { recommendationState, deepModeState } = states();
     const terminal = createTerminalState(lifecycle());
     const middleware = createLifecycleMiddleware(
@@ -97,10 +97,12 @@ describe('AI stream lifecycle', () => {
       () => null,
       'assistant-1',
     );
-    const toolChoice = (): unknown =>
-      middleware.onConfig(context, config()).modelOptions?.tool_choice;
+    const toolChoice = async (): Promise<unknown> => {
+      const transformed = await middleware.onConfig?.(context, config());
+      return transformed ? transformed.modelOptions?.tool_choice : undefined;
+    };
 
-    expect(toolChoice()).toEqual({
+    await expect(toolChoice()).resolves.toEqual({
       type: 'function',
       function: { name: 'assessShoppingAmbiguity' },
     });
@@ -109,7 +111,7 @@ describe('AI stream lifecycle', () => {
       ambiguityScore: 0.4,
       clarificationDimension: 'purpose',
     };
-    expect(toolChoice()).toEqual({
+    await expect(toolChoice()).resolves.toEqual({
       type: 'function',
       function: { name: 'askUser' },
     });
@@ -118,13 +120,13 @@ describe('AI stream lifecycle', () => {
       ambiguityScore: 0,
       clarificationDimension: null,
     };
-    expect(toolChoice()).toEqual({
+    await expect(toolChoice()).resolves.toEqual({
       type: 'function',
       function: { name: 'searchProducts' },
     });
     deepModeState.searchedProducts = true;
     recommendationState.productIds.add('product-1');
-    expect(toolChoice()).toEqual({
+    await expect(toolChoice()).resolves.toEqual({
       type: 'function',
       function: { name: 'recordProductRecommendations' },
     });
@@ -132,7 +134,7 @@ describe('AI stream lifecycle', () => {
       'product-1',
       '상품 특징이 요청한 조건에 잘 맞기 때문에 추천합니다.',
     );
-    expect(toolChoice()).toBeUndefined();
+    await expect(toolChoice()).resolves.toBeUndefined();
   });
 
   it('rejects an incomplete response and records one failure', async () => {
@@ -155,7 +157,7 @@ describe('AI stream lifecycle', () => {
       content: '완료되지 않은 응답',
     };
 
-    await expect(middleware.onFinish(context, info)).rejects.toThrow(
+    await expect(middleware.onFinish?.(context, info)).rejects.toThrow(
       'Command Code returned an incomplete response',
     );
     expect(onFailure).toHaveBeenCalledTimes(1);
@@ -252,7 +254,7 @@ describe('AI stream lifecycle', () => {
     );
     const info: AbortInfo = { duration: 1, cancelRequested: true };
 
-    await middleware.onAbort(context, info);
+    await middleware.onAbort?.(context, info);
 
     expect(terminal.status()).toBe('cancelled');
     expect(onFailure).not.toHaveBeenCalled();
@@ -274,8 +276,8 @@ describe('AI stream lifecycle', () => {
     );
     const info: ErrorInfo = { duration: 1, error: new Error('provider') };
 
-    await middleware.onError(context, info);
-    await middleware.onError(context, info);
+    await middleware.onError?.(context, info);
+    await middleware.onError?.(context, info);
 
     expect(terminal.status()).toBe('failed');
     expect(onFailure).toHaveBeenCalledTimes(1);

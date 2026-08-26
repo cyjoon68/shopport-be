@@ -1,23 +1,17 @@
 import type {
-  AbortInfo,
+  ChatMiddleware,
   ChatMiddlewareConfig,
-  ChatMiddlewareContext,
-  ErrorInfo,
-  FinishInfo,
   StreamChunk,
 } from '@tanstack/ai';
 import { EventType, RUN_CANCEL_REASON } from '@tanstack/ai';
 
 import {
-  ambiguityAssessmentToolChoice,
-  askUserToolChoice,
   type DeepModeState,
+  nextToolChoice,
   type ProductRecommendationState,
-  recommendationToolChoice,
-  searchProductsToolChoice,
+  providerStreamResult,
 } from './ai-provider-protocol.js';
 import type {
-  AiProductRecommendation,
   AiStreamInput,
   AiStreamLifecycle,
   AiStreamResult,
@@ -40,35 +34,7 @@ type TerminalState = Readonly<{
   cancel: () => void;
 }>;
 
-type LifecycleMiddleware = Readonly<{
-  name: string;
-  stop: () => void;
-  onConfig: (
-    context: ChatMiddlewareContext,
-    config: ChatMiddlewareConfig,
-  ) => Partial<ChatMiddlewareConfig>;
-  setup: () => void;
-  onShouldContinue: () => boolean;
-  onFinish: (context: ChatMiddlewareContext, info: FinishInfo) => Promise<void>;
-  onAbort: (context: ChatMiddlewareContext, info: AbortInfo) => Promise<void>;
-  onError: (context: ChatMiddlewareContext, info: ErrorInfo) => Promise<void>;
-}>;
-
-const expectedProductIds = (
-  state: ProductRecommendationState,
-): ReadonlyArray<string> => [...state.productIds];
-
-const recommendationsComplete = (state: ProductRecommendationState): boolean =>
-  state.productIds.size === 0 ||
-  [...state.productIds].every((productId) => state.aiSummaries.has(productId));
-
-const productRecommendations = (
-  state: ProductRecommendationState,
-): ReadonlyArray<AiProductRecommendation> =>
-  expectedProductIds(state).flatMap((productId) => {
-    const aiSummary = state.aiSummaries.get(productId);
-    return aiSummary ? [{ productId, aiSummary }] : [];
-  });
+type LifecycleMiddleware = ChatMiddleware & Readonly<{ stop: () => void }>;
 
 export const createTerminalState = (
   lifecycle: AiStreamLifecycle,
@@ -158,26 +124,15 @@ export const createLifecycleMiddleware = (
     onConfig: (_context, config): Partial<ChatMiddlewareConfig> => {
       const modelOptions = { ...config.modelOptions };
       delete modelOptions.tool_choice;
-      const clarificationDimension =
-        deepModeState.assessment?.clarificationDimension ?? null;
-      const needsShoppingSearch =
-        deepModeState.assessment?.requestKind === 'shopping' &&
-        !deepModeState.searchedProducts;
+      const toolChoice = nextToolChoice(
+        recommendationState,
+        deepModeState,
+        askUserState(),
+      );
       return {
-        modelOptions: askUserState()
-          ? modelOptions
-          : deepModeState.assessmentRequired && !deepModeState.assessment
-            ? {
-                ...modelOptions,
-                tool_choice: ambiguityAssessmentToolChoice,
-              }
-            : clarificationDimension
-              ? { ...modelOptions, tool_choice: askUserToolChoice }
-              : needsShoppingSearch
-                ? { ...modelOptions, tool_choice: searchProductsToolChoice }
-                : recommendationsComplete(recommendationState)
-                  ? modelOptions
-                  : { ...modelOptions, tool_choice: recommendationToolChoice },
+        modelOptions: toolChoice
+          ? { ...modelOptions, tool_choice: toolChoice }
+          : modelOptions,
       };
     },
     setup: (): void => {
@@ -199,37 +154,19 @@ export const createLifecycleMiddleware = (
     onShouldContinue: (): boolean => askUserState() === null,
     onFinish: async (_context, info): Promise<void> => {
       stop();
-      const text = info.content.trim();
-      const askUser = askUserState();
-      const needsAssessment =
-        deepModeState.assessmentRequired && !deepModeState.assessment;
-      const needsClarification =
-        deepModeState.assessment !== null &&
-        deepModeState.assessment.clarificationDimension !== null;
-      const needsSearch =
-        deepModeState.assessment?.requestKind === 'shopping' &&
-        !needsClarification &&
-        !deepModeState.searchedProducts;
-      if (
-        !askUser &&
-        (needsAssessment ||
-          needsClarification ||
-          needsSearch ||
-          info.finishReason !== 'stop' ||
-          text.length === 0 ||
-          !recommendationsComplete(recommendationState))
-      ) {
+      const result = providerStreamResult(
+        info.finishReason,
+        info.content,
+        recommendationState,
+        deepModeState,
+        askUserState(),
+        assistantMessageId,
+      );
+      if (!result) {
         await terminal.fail();
         throw new Error('Command Code returned an incomplete response');
       }
-      await terminal.complete({
-        messageId: assistantMessageId,
-        text: askUser ? '' : text,
-        productRecommendations: askUser
-          ? []
-          : productRecommendations(recommendationState),
-        askUser,
-      });
+      await terminal.complete(result);
     },
     onAbort: async (_context, info): Promise<void> => {
       stop();
