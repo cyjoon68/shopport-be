@@ -24,10 +24,11 @@ export class ConversationService {
     after: string | null,
   ): Promise<ConversationConnection> {
     const first = Math.min(Math.max(requestedFirst, 1), 50);
+    const cursor = after ?? null;
     const records = await this.repository.list(
       accountId,
       first,
-      decodeCursor(after),
+      decodeCursor(cursor),
     );
     const hasNextPage = records.length > first;
     const page = records.slice(0, first);
@@ -42,7 +43,7 @@ export class ConversationService {
       edges,
       pageInfo: {
         hasNextPage,
-        hasPreviousPage: after !== null,
+        hasPreviousPage: cursor !== null,
         startCursor: edges.at(0)?.cursor ?? null,
         endCursor: edges.at(-1)?.cursor ?? null,
       },

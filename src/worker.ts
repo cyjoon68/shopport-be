@@ -27,21 +27,28 @@ const runMaintenance = async (
     if (recoveryDue) nextRecoveryAt = Date.now() + recoveryCadenceMilliseconds;
     if (retentionDue)
       nextRetentionAt = Date.now() + retentionCadenceMilliseconds;
-    const results = await Promise.allSettled([
-      assets.consume(),
-      archives.archive(),
-      recoveryDue ? staleRuns.recover() : Promise.resolve(0),
-      retentionDue ? retention.cleanup() : Promise.resolve(),
-    ]);
-    for (const result of results) {
+    const [assetResults, archiveResult, staleRunResult, retentionResult] =
+      await Promise.allSettled([
+        assets.consume(),
+        archives.archive(),
+        recoveryDue ? staleRuns.recover() : Promise.resolve(0),
+        retentionDue ? retention.cleanup() : Promise.resolve(),
+      ]);
+    for (const [task, result] of [
+      ['asset-results', assetResults],
+      ['archive', archiveResult],
+      ['stale-runs', staleRunResult],
+      ['retention', retentionResult],
+    ] as const) {
       if (result.status === 'rejected') {
-        report('Worker task failed', result.reason);
+        report(task, result.reason);
       }
     }
-    const assetWork = results[0].status === 'fulfilled' && results[0].value;
-    const archiveWork = results[1].status === 'fulfilled' && results[1].value;
+    const assetWork = assetResults.status === 'fulfilled' && assetResults.value;
+    const archiveWork =
+      archiveResult.status === 'fulfilled' && archiveResult.value;
     const recoveredRuns =
-      results[2].status === 'fulfilled' ? results[2].value : 0;
+      staleRunResult.status === 'fulfilled' ? staleRunResult.value : 0;
     if (!assetWork && !archiveWork && recoveredRuns === 0) {
       await delay(500, signal);
     }
@@ -77,6 +84,6 @@ const bootstrap = async (): Promise<void> => {
 };
 
 bootstrap().catch((error: unknown) => {
-  report('Worker failed', error);
+  report('worker', error);
   process.exitCode = 1;
 });

@@ -37,7 +37,9 @@ export class AuthGuard implements CanActivate {
     private readonly repository: AuthRepository,
   ) {}
 
-  public async canActivate(context: ExecutionContext): Promise<boolean> {
+  public readonly canActivate = async (
+    context: ExecutionContext,
+  ): Promise<boolean> => {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
       context.getHandler(),
       context.getClass(),
@@ -47,9 +49,13 @@ export class AuthGuard implements CanActivate {
     const request = this.requestFrom(context);
     const token = extractBearer(request);
     if (!token) throw new UnauthorizedException('Access token required');
-    const claims = accessClaimsSchema.safeParse(
-      await this.jwt.verifyAsync<Record<string, unknown>>(token),
-    );
+    let verified: Record<string, unknown>;
+    try {
+      verified = await this.jwt.verifyAsync<Record<string, unknown>>(token);
+    } catch {
+      throw new UnauthorizedException('Invalid access token');
+    }
+    const claims = accessClaimsSchema.safeParse(verified);
     if (!claims.success)
       throw new UnauthorizedException('Invalid access token');
     if (
@@ -62,7 +68,7 @@ export class AuthGuard implements CanActivate {
     }
     request.user = claims.data;
     return true;
-  }
+  };
 
   private readonly requestFrom = (
     context: ExecutionContext,

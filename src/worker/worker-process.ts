@@ -13,10 +13,12 @@ const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
     signal.addEventListener('abort', complete, { once: true });
   });
 
-const report = (fallback: string, reason: unknown): void => {
-  process.stderr.write(
-    `${reason instanceof Error ? reason.message : fallback}\n`,
-  );
+const report = (task: string, reason: unknown): void => {
+  const error = reason instanceof Error ? reason : null;
+  const record = error?.stack
+    ? { task, message: error.message, stack: error.stack }
+    : { task, message: error?.message ?? 'Worker failure' };
+  process.stderr.write(`${JSON.stringify(record)}\n`);
 };
 
 export { delay, report };

@@ -1,16 +1,14 @@
 import { Injectable } from '@nestjs/common';
 
-import { AiRepository } from '../modules/ai/ai.repository.js';
+import { AiRunMaintenanceRepository } from '../modules/ai/ai-run-maintenance.repository.js';
 
 @Injectable()
 export class StaleRunRecovery {
-  public constructor(private readonly repository: AiRepository) {}
+  public constructor(private readonly repository: AiRunMaintenanceRepository) {}
 
   public recover = async (): Promise<number> => {
-    const [recovered] = await Promise.all([
-      this.repository.recoverStaleReservedRuns(),
-      this.repository.cleanupRuntimeState(),
-    ]);
+    const recovered = await this.repository.recoverStaleReservedRuns();
+    await this.repository.cleanupRuntimeState();
     return recovered;
   };
 }

@@ -1,4 +1,8 @@
-import { S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
 
@@ -32,5 +36,45 @@ describe('object store cleanup', () => {
       store.deletePrefix('raw', 'uploads/account/'),
     ).resolves.toBeUndefined();
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a partial prefix deletion without exposing object keys', async () => {
+    jest
+      .spyOn(S3Client.prototype, 'send')
+      .mockImplementation((command: unknown) => {
+        if (command instanceof ListObjectsV2Command) {
+          return Promise.resolve({
+            Contents: [
+              { Key: 'uploads/private-account/asset/original' },
+              { Key: 'uploads/private-account/asset/normalized.jpg' },
+            ],
+          }) as never;
+        }
+        if (command instanceof DeleteObjectsCommand) {
+          return Promise.resolve({
+            Errors: [
+              {
+                Code: 'AccessDenied',
+                Key: 'uploads/private-account/asset/original',
+              },
+              {
+                Code: 'InternalError',
+                Key: 'uploads/private-account/asset/normalized.jpg',
+              },
+            ],
+          }) as never;
+        }
+        throw new Error('Unexpected S3 command');
+      });
+    const store = new ObjectStore(config);
+
+    await expect(
+      store.deletePrefix('raw', 'uploads/private-account/'),
+    ).rejects.toThrow(
+      'S3 multi-delete failed: count=2 codes=AccessDenied,InternalError',
+    );
+    await expect(
+      store.deletePrefix('raw', 'uploads/private-account/'),
+    ).rejects.not.toThrow(/private-account|asset|original|normalized/u);
   });
 });

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
@@ -38,6 +38,7 @@ export class AuthRepository {
       const existing = await transaction
         .select({
           accountId: accounts.id,
+          deletedAt: accounts.deletedAt,
           displayName: accounts.displayName,
           profileImageUrl: accounts.profileImageUrl,
         })
@@ -47,12 +48,15 @@ export class AuthRepository {
           and(
             eq(authIdentities.provider, identity.provider),
             eq(authIdentities.providerSubject, identity.subject),
-            isNull(accounts.deletedAt),
           ),
         )
         .limit(1);
       const account = existing.at(0);
-      if (account) return account;
+      if (account) {
+        if (account.deletedAt)
+          throw new ConflictException('Account deletion is pending');
+        return account;
+      }
 
       const accountId = uuidv7();
       await transaction.insert(accounts).values({
@@ -112,6 +116,22 @@ export class AuthRepository {
     input: RotateSessionInput,
   ): Promise<RotateSessionResult> =>
     this.database.transaction(async (transaction) => {
+      const owners = await transaction
+        .select({ accountId: authSessions.accountId })
+        .from(authSessions)
+        .innerJoin(accounts, eq(authSessions.accountId, accounts.id))
+        .where(
+          and(
+            eq(authSessions.id, input.previousId),
+            isNull(accounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const owner = owners.at(0);
+      if (!owner) return { status: 'invalid' };
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${owner.accountId}, 0))`,
+      );
       const sessions = await transaction
         .select({
           id: authSessions.id,
@@ -185,18 +205,53 @@ export class AuthRepository {
   public revokeSession = async (
     id: string,
     expectedHash: string,
-  ): Promise<void> => {
-    await this.database
-      .update(authSessions)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(authSessions.id, id),
-          eq(authSessions.tokenHash, expectedHash),
-          isNull(authSessions.revokedAt),
-        ),
+  ): Promise<boolean> =>
+    this.database.transaction(async (transaction) => {
+      const owners = await transaction
+        .select({ accountId: authSessions.accountId })
+        .from(authSessions)
+        .where(
+          and(
+            eq(authSessions.id, id),
+            eq(authSessions.tokenHash, expectedHash),
+          ),
+        )
+        .limit(1);
+      const owner = owners.at(0);
+      if (!owner) return false;
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${owner.accountId}, 0))`,
       );
-  };
+      const sessions = await transaction
+        .select({ id: authSessions.id })
+        .from(authSessions)
+        .where(
+          and(
+            eq(authSessions.id, id),
+            eq(authSessions.tokenHash, expectedHash),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!sessions.at(0)) return false;
+      await transaction.execute(sql`
+        with recursive lineage as (
+          select ${authSessions.id} as id,
+                 ${authSessions.replacedBySessionId} as next_id
+          from ${authSessions}
+          where ${authSessions.id} = ${id}
+          union all
+          select child.id, child.replaced_by_session_id
+          from ${authSessions} child
+          inner join lineage parent on child.id = parent.next_id
+        )
+        update ${authSessions}
+        set revoked_at = coalesce(${authSessions.revokedAt}, now()),
+            updated_at = now()
+        where ${authSessions.id} in (select id from lineage)
+      `);
+      return true;
+    });
 
   public revokeAccountSessions = async (accountId: string): Promise<void> => {
     await this.database

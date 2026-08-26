@@ -11,14 +11,15 @@ import request from 'supertest';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
-import { DATABASE } from '../src/database/database.module.js';
-import type {
-  AiStreamAdapter,
-  AiStreamInput,
-  AiStreamLifecycle,
-} from '../src/modules/ai/ai-stream.adapter.js';
+import { decodePageCursor } from '../src/common/cursor.js';
+import { DATABASE_POOL } from '../src/database/database.module.js';
+import type { AiStreamAdapter } from '../src/modules/ai/ai-stream.adapter.js';
 import { AI_STREAM_ADAPTER } from '../src/modules/ai/ai-stream.adapter.js';
 import type { AiToolSession } from '../src/modules/ai/ai-tools.js';
+import type {
+  AiStreamInput,
+  AiStreamLifecycle,
+} from '../src/modules/ai/types.js';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
 import type {
@@ -33,16 +34,25 @@ import type {
 } from '../src/modules/catalog/types.js';
 import { ObjectStore } from '../src/storage/object-store.js';
 import type { StorageBucket } from '../src/storage/storage-buckets.js';
+import { AssetResultConsumer } from '../src/worker/asset-result.consumer.js';
 import { OutboxProcessor } from '../src/worker/outbox.processor.js';
 import { OutboxWakeup } from '../src/worker/outbox-wakeup.js';
 import { RetentionCleanup } from '../src/worker/retention-cleanup.js';
 import { StaleRunRecovery } from '../src/worker/stale-run-recovery.js';
+import { registerAiRuntimeScenarios } from './ai-runtime.integration-scenarios.js';
+import { registerAuthSessionScenarios } from './auth-session.integration-scenarios.js';
+import { registerWorkerScenarios } from './worker.integration-scenarios.js';
 
 const storedObjects = new Map<string, Buffer>();
 const objectPutCalls: Array<readonly [StorageBucket, string]> = [];
 const objectGetCalls: Array<readonly [StorageBucket, string]> = [];
 const objectDeleteKeyCalls: Array<readonly [StorageBucket, string]> = [];
 const objectDeletePrefixCalls: Array<readonly [StorageBucket, string]> = [];
+const normalizationResultOrder: string[] = [];
+let normalizationDeleteBarrier: Promise<void> | undefined;
+let normalizationDeleteBarrierKey: readonly [StorageBucket, string] | undefined;
+let resolveNormalizationDeleteStarted: (() => void) | undefined;
+let objectDeleteError: Error | undefined;
 const objectStore = {
   put: (bucket: StorageBucket, key: string, body: Buffer): Promise<void> => {
     objectPutCalls.push([bucket, key]);
@@ -58,7 +68,16 @@ const objectStore = {
   },
   deleteKey: (bucket: StorageBucket, key: string): Promise<void> => {
     objectDeleteKeyCalls.push([bucket, key]);
-    return Promise.resolve();
+    normalizationResultOrder.push(`delete:${bucket}:${key}`);
+    if (objectDeleteError) return Promise.reject(objectDeleteError);
+    const blocked =
+      normalizationDeleteBarrier &&
+      (!normalizationDeleteBarrierKey ||
+        (normalizationDeleteBarrierKey[0] === bucket &&
+          normalizationDeleteBarrierKey[1] === key));
+    if (!blocked) return Promise.resolve();
+    resolveNormalizationDeleteStarted?.();
+    return normalizationDeleteBarrier ?? Promise.resolve();
   },
   deletePrefix: (bucket: StorageBucket, prefix: string): Promise<void> => {
     objectDeletePrefixCalls.push([bucket, prefix]);
@@ -89,12 +108,14 @@ const integrationCatalogProvider: CatalogProvider = {
   providerId: 'integration',
   capabilities: ['LIVE_QUERY'],
   outboundHosts: ['www.daisomall.co.kr'],
-  search: () =>
-    Promise.resolve({
+  search: ({ after }) => {
+    decodePageCursor(after ?? null);
+    return Promise.resolve({
       items: [integrationProduct],
       endCursor: null,
       hasNextPage: false,
-    }),
+    });
+  },
 };
 
 const createIntegrationStream = async function* (
@@ -139,10 +160,21 @@ const createIntegrationStream = async function* (
   };
 };
 
+const createIntegrationAiStream = (
+  input: AiStreamInput,
+  tools: AiToolSession,
+  lifecycle: AiStreamLifecycle,
+): AsyncIterable<StreamChunk> => {
+  if (input.text === 'pre-producer failure') {
+    throw new Error('Integration pre-producer failure');
+  }
+  return createIntegrationStream(input, tools, lifecycle);
+};
+
 const integrationAiStream: AiStreamAdapter = {
   requiresImageData: false,
   generateTitle: () => Promise.resolve('통합 테스트 대화'),
-  createStream: createIntegrationStream,
+  createStream: createIntegrationAiStream,
 };
 
 const loginSchema = z.object({
@@ -209,19 +241,27 @@ const parseStreamChunks = (
 const integrationIdentityToken = 'integration-kakao-token';
 const integrationSubject = 'integration-kakao';
 const secondIntegrationSubject = 'integration-kakao-second';
+const deletionPendingIntegrationSubject = 'integration-kakao-deletion-pending';
+
+type AuthBarrierWait = Readonly<{
+  clear: () => void;
+  promise: Promise<void>;
+}>;
 
 describe('Shopport API vertical flow', () => {
   let app: INestApplication;
   let postgres: StartedPostgreSqlContainer;
   let accessToken: string;
-  let refreshToken: string;
   let conversationId: string;
   let completedRunId: string;
   let baseUrl: string;
   let pool: Pool;
+  let appPool: Pool;
+  let resolveAuthBarrier: ((message: string) => void) | undefined;
   let workerModule: TestingModule;
   let staleRunRecovery: StaleRunRecovery;
   let archiveWriter: ArchiveWriter;
+  let assetResultConsumer: AssetResultConsumer;
   let archiveReader: ArchiveReader;
   let outboxProcessor: OutboxProcessor;
   let outboxWakeup: OutboxWakeup;
@@ -230,6 +270,70 @@ describe('Shopport API vertical flow', () => {
   let poolInitialized = false;
   let workerModuleInitialized = false;
   let appInitialized = false;
+
+  const waitForAuthBarrier = (
+    expectedMessage: string,
+    timeoutMilliseconds = 5_000,
+  ): AuthBarrierWait => {
+    let clear = (): void => undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        clear();
+        reject(new Error(`Timed out waiting for ${expectedMessage}`));
+      }, timeoutMilliseconds);
+      clear = (): void => {
+        clearTimeout(timeout);
+        resolveAuthBarrier = undefined;
+      };
+      resolveAuthBarrier = (message): void => {
+        if (message !== expectedMessage) return;
+        clear();
+        resolve();
+      };
+    });
+    return { clear, promise };
+  };
+
+  const createAiOwner = async (): Promise<
+    Readonly<{
+      accessToken: string;
+      accountId: string;
+      conversationId: string;
+    }>
+  > => {
+    const loginResponse = await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'task-five-owner',
+      })
+      .expect(200);
+    const ownerAccessToken = loginSchema.parse(loginResponse.body).accessToken;
+    const conversationResponse = await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', `Bearer ${ownerAccessToken}`)
+      .send({
+        query:
+          'mutation Create($input: CreateConversationInput!) { createConversation(input: $input) { conversation { id } userErrors { code } } }',
+        variables: { input: { title: 'AI 실행 복구' } },
+      })
+      .expect(200);
+    const ownerConversationId = conversationSchema.parse(
+      conversationResponse.body,
+    ).data.createConversation.conversation.id;
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected Kakao account');
+    return {
+      accessToken: ownerAccessToken,
+      accountId,
+      conversationId: ownerConversationId,
+    };
+  };
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer('postgres:16.8-alpine')
@@ -254,6 +358,12 @@ describe('Shopport API vertical flow', () => {
     process.env.NORMALIZED_ASSET_BUCKET = 'integration-normalized';
     process.env.ARCHIVE_BUCKET = 'integration-archive';
     pool = new Pool({ connectionString: postgres.getConnectionUri() });
+    appPool = new Pool({ connectionString: postgres.getConnectionUri() });
+    appPool.on('connect', (client) => {
+      client.on('notice', ({ message }) => {
+        if (message) resolveAuthBarrier?.(message);
+      });
+    });
     poolInitialized = true;
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
     await migrate(drizzle(pool), { migrationsFolder: './migrations' });
@@ -268,6 +378,7 @@ describe('Shopport API vertical flow', () => {
     staleRunRecovery = workerModule.get(StaleRunRecovery);
     archiveWriter = workerModule.get(ArchiveWriter);
     archiveReader = workerModule.get(ArchiveReader);
+    assetResultConsumer = workerModule.get(AssetResultConsumer);
     outboxProcessor = workerModule.get(OutboxProcessor);
     outboxWakeup = workerModule.get(OutboxWakeup);
     retentionCleanup = workerModule.get(RetentionCleanup);
@@ -275,6 +386,8 @@ describe('Shopport API vertical flow', () => {
     const module = await Test.createTestingModule({
       imports: [AppModule],
     })
+      .overrideProvider(DATABASE_POOL)
+      .useValue(appPool)
       .overrideProvider(ProviderTokenVerifier)
       .useValue({
         verify: (
@@ -287,7 +400,9 @@ describe('Shopport API vertical flow', () => {
             subject:
               nonce === 'second-account'
                 ? secondIntegrationSubject
-                : integrationSubject,
+                : nonce === 'deletion-pending identity'
+                  ? deletionPendingIntegrationSubject
+                  : integrationSubject,
             displayName: '통합 테스트 사용자',
             profileImageUrl: null,
           }),
@@ -370,6 +485,86 @@ describe('Shopport API vertical flow', () => {
     });
   });
 
+  it('rejects a deletion-pending identity without creating a duplicate', async () => {
+    await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'deletion-pending identity',
+      })
+      .expect(200);
+    const accountCountBefore = await pool.query<{ count: string }>(
+      'select count(*)::text as count from accounts',
+    );
+    const account = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = $1`,
+      [deletionPendingIntegrationSubject],
+    );
+    const accountId = account.rows.at(0)?.account_id;
+    if (!accountId) throw new Error('Expected deletion-pending account');
+    await pool.query('update accounts set deleted_at = now() where id = $1', [
+      accountId,
+    ]);
+
+    await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'deletion-pending identity',
+      })
+      .expect(409);
+
+    const identities = await pool.query<{ account_id: string }>(
+      `select account_id
+       from auth_identities
+       where provider = 'kakao' and provider_subject = $1`,
+      [deletionPendingIntegrationSubject],
+    );
+    const accountCountAfter = await pool.query<{ count: string }>(
+      'select count(*)::text as count from accounts',
+    );
+    expect(identities.rows).toEqual([{ account_id: accountId }]);
+    expect(accountCountAfter.rows.at(0)?.count).toBe(
+      accountCountBefore.rows.at(0)?.count,
+    );
+  });
+
+  it('rejects a malformed access token without exposing JWT errors', async () => {
+    const httpResponse = await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', 'Bearer not-a-jwt')
+      .send({})
+      .expect(401);
+    expect(
+      z.object({ message: z.string() }).parse(httpResponse.body).message,
+    ).toBe('Invalid access token');
+
+    const response = await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', 'Bearer not-a-jwt')
+      .send({ query: '{ viewer { id } }' })
+      .expect(200);
+
+    const graphqlResponse = z
+      .object({
+        errors: z.array(
+          z.object({
+            message: z.string(),
+            extensions: z.object({ code: z.string() }),
+          }),
+        ),
+      })
+      .parse(response.body);
+    const graphqlError = graphqlResponse.errors.at(0);
+    expect(graphqlError).toBeDefined();
+    if (!graphqlError) throw new Error('Expected GraphQL authentication error');
+    expect(graphqlError.message).toBe('Invalid access token');
+    expect(graphqlError.extensions.code).toBe('UNAUTHENTICATED');
+    expect(response.text).not.toContain('jwt malformed');
+  });
+
   it('logs in, chats, replays, saves a product, and reads history', async () => {
     const loginResponse = await request(baseUrl)
       .post('/v1/auth/kakao')
@@ -380,7 +575,6 @@ describe('Shopport API vertical flow', () => {
       .expect(200);
     const login = loginSchema.parse(loginResponse.body);
     accessToken = login.accessToken;
-    refreshToken = login.refreshToken;
 
     const conversationResponse = await request(baseUrl)
       .post('/graphql')
@@ -514,6 +708,47 @@ describe('Shopport API vertical flow', () => {
       .expect(409);
   }, 30_000);
 
+  it('surfaces invalid cursors as GraphQL validation errors', async () => {
+    const loginResponse = await request(baseUrl)
+      .post('/v1/auth/kakao')
+      .send({
+        identityToken: integrationIdentityToken,
+        nonce: 'invalid-cursor-nonce',
+      })
+      .expect(200);
+    const invalidCursorAccessToken = loginSchema.parse(
+      loginResponse.body,
+    ).accessToken;
+
+    for (const query of [
+      '{ conversations(first: 1, after: "MA") { edges { cursor } } }',
+      '{ savedProducts(first: 1, after: "MA") { edges { cursor } } }',
+      '{ searchProducts(input: { query: "텀블러" }, first: 1, after: "MA") { edges { cursor } } }',
+    ]) {
+      const response = await request(baseUrl)
+        .post('/graphql')
+        .set('authorization', `Bearer ${invalidCursorAccessToken}`)
+        .send({ query })
+        .expect(200);
+      const result = z
+        .object({
+          errors: z.array(
+            z.object({
+              message: z.string(),
+              extensions: z.object({ code: z.string() }),
+            }),
+          ),
+        })
+        .parse(response.body);
+
+      const error = result.errors.at(0);
+      expect(error).toBeDefined();
+      if (!error) throw new Error('Expected GraphQL validation error');
+      expect(error.message).toBe('Invalid cursor');
+      expect(error.extensions.code).toBe('VALIDATION_FAILED');
+    }
+  });
+
   it('hides cross-account replay and cancel, then cancels idempotently', async () => {
     const secondLoginResponse = await request(baseUrl)
       .post('/v1/auth/kakao')
@@ -624,333 +859,46 @@ describe('Shopport API vertical flow', () => {
     expect(successors.rows.at(0)?.count).toBe('1');
   }, 30_000);
 
-  it('recovers only stale reserved runs once', async () => {
-    const account = await pool.query<{ account_id: string }>(
-      `select account_id
-       from auth_identities
-       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
-    );
-    const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Kakao account');
-    const now = new Date();
-    const overdue = new Date(now.getTime() - 180_000);
-    const future = new Date(now.getTime() + 180_000);
-    const staleRunId = uuidv7();
-    const freshRunId = uuidv7();
-    const completedRunId = uuidv7();
-    const cancelledRunId = uuidv7();
-
-    await pool.query(
-      `insert into ai_runs
-       (id, account_id, conversation_id, status, started_at, deadline_at,
-        heartbeat_at, completed_at)
-       values
-       ($1, $5, $6, 'reserved', $7, $7, $7, null),
-       ($2, $5, $6, 'reserved', $8, $8, $8, null),
-       ($3, $5, $6, 'completed', $7, $7, $7, $8),
-       ($4, $5, $6, 'cancelled', $7, $7, $7, $8)`,
-      [
-        staleRunId,
-        freshRunId,
-        completedRunId,
-        cancelledRunId,
-        accountId,
-        conversationId,
-        overdue,
-        future,
-      ],
-    );
-
-    await expect(staleRunRecovery.recover()).resolves.toBe(1);
-    await expect(staleRunRecovery.recover()).resolves.toBe(0);
-
-    const runs = await pool.query<{ id: string; status: string }>(
-      `select id, status
-       from ai_runs
-       where id = any($1::uuid[])
-       order by id`,
-      [[staleRunId, freshRunId, completedRunId, cancelledRunId]],
-    );
-    const statuses = new Map(runs.rows.map(({ id, status }) => [id, status]));
-
-    expect(statuses.get(staleRunId)).toBe('failed');
-    expect(statuses.get(freshRunId)).toBe('reserved');
-    expect(statuses.get(completedRunId)).toBe('completed');
-    expect(statuses.get(cancelledRunId)).toBe('cancelled');
-  }, 30_000);
-
-  it('uses archive storage and purges each split bucket', async () => {
-    const account = await pool.query<{ account_id: string }>(
-      `select account_id
-       from auth_identities
-       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
-    );
-    const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Kakao account');
-    const archivedMessageId = uuidv7();
-    const archivedPartId = uuidv7();
-    const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1_000);
-    objectPutCalls.length = 0;
-    objectGetCalls.length = 0;
-    storedObjects.clear();
-    await pool.query(
-      `insert into messages
-       (id, conversation_id, role, status, created_at)
-       values ($1, $2, 'user', 'completed', $3)`,
-      [archivedMessageId, conversationId, old],
-    );
-    await pool.query(
-      `insert into message_parts
-       (id, message_id, kind, position, payload)
-       values ($1, $2, 'text', 0, $3::jsonb)`,
-      [archivedPartId, archivedMessageId, JSON.stringify({ text: 'archive' })],
-    );
-
-    await expect(archiveWriter.archive()).resolves.toBe(true);
-    const archiveKey = objectPutCalls.at(0)?.at(1);
-    if (!archiveKey) throw new Error('Expected archive object key');
-    expect(objectPutCalls.at(0)?.at(0)).toBe('archive');
-    expect(archiveKey).toEqual(expect.stringMatching(/^archives\//u));
-    expect(objectGetCalls).toContainEqual(['archive', archiveKey]);
-
-    const archives = await archiveReader.forConversations([conversationId]);
-    expect(archives.get(conversationId)?.messages).toEqual([
-      expect.objectContaining({ id: archivedMessageId }),
-    ]);
-    expect(objectGetCalls.at(-1)).toEqual(['archive', archiveKey]);
-    await expect(
-      pool.query('select id from message_parts where id = $1', [
-        archivedPartId,
-      ]),
-    ).resolves.toMatchObject({ rows: [] });
-
-    const purgeAccountId = uuidv7();
-    const originalKey = `uploads/${purgeAccountId}/${uuidv7()}/original`;
-    const normalizedKey = originalKey.replace(
-      /\/original$/u,
-      '/normalized.jpg',
-    );
-    await pool.query(
-      `insert into accounts
-       (id, display_name)
-       values ($1, 'purge')`,
-      [purgeAccountId],
-    );
-    await pool.query(
-      `insert into outbox (id, topic, payload)
-       values
-       ($1, 'asset.purge', $2::jsonb),
-       ($3, 'account.purge', $4::jsonb)`,
-      [
-        uuidv7(),
-        JSON.stringify({
-          accountId: purgeAccountId,
-          originalKey,
-          normalizedKey,
-        }),
-        uuidv7(),
-        JSON.stringify({ accountId: purgeAccountId }),
-      ],
-    );
-    objectDeleteKeyCalls.length = 0;
-    objectDeletePrefixCalls.length = 0;
-
-    await expect(outboxProcessor.process()).resolves.toBe(true);
-
-    expect(objectDeleteKeyCalls).toContainEqual(['raw', originalKey]);
-    expect(objectDeleteKeyCalls).toContainEqual(['normalized', normalizedKey]);
-    expect(objectDeletePrefixCalls).toContainEqual([
-      'raw',
-      `uploads/${purgeAccountId}/`,
-    ]);
-    expect(objectDeletePrefixCalls).toContainEqual([
-      'normalized',
-      `uploads/${purgeAccountId}/`,
-    ]);
-    expect(objectDeletePrefixCalls).toContainEqual([
-      'archive',
-      `archives/${purgeAccountId}/`,
-    ]);
-  }, 30_000);
-
-  it('claims an outbox event once across competing workers', async () => {
-    const account = await pool.query<{ account_id: string }>(
-      `select account_id
-       from auth_identities
-       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
-    );
-    const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Kakao account');
-    const eventId = uuidv7();
-    const originalKey = `uploads/${accountId}/${uuidv7()}/original`;
-    objectDeleteKeyCalls.length = 0;
-    await pool.query(
-      `insert into outbox (id, topic, payload)
-       values ($1, 'asset.purge', $2::jsonb)`,
-      [
-        eventId,
-        JSON.stringify({ accountId, originalKey, normalizedKey: null }),
-      ],
-    );
-    const competingProcessor = new OutboxProcessor(
-      workerModule.get(DATABASE),
-      objectStore as unknown as ObjectStore,
-    );
-
-    const results = await Promise.all([
-      outboxProcessor.process(),
-      competingProcessor.process(),
-    ]);
-
-    expect(results.filter(Boolean)).toHaveLength(1);
-    expect(
-      objectDeleteKeyCalls.filter(
-        ([bucket, key]) => bucket === 'raw' && key === originalKey,
-      ),
-    ).toHaveLength(1);
-    const event = await pool.query<{
-      locked_by: string | null;
-      published_at: Date | null;
-    }>('select locked_by, published_at from outbox where id = $1', [eventId]);
-    expect(event.rows.at(0)?.locked_by).toBeNull();
-    expect(event.rows.at(0)?.published_at).toBeInstanceOf(Date);
-  });
-
-  it('wakes the outbox worker only for committed changes', async () => {
-    const committedId = uuidv7();
-    const rolledBackId = uuidv7();
-    const signal = new AbortController().signal;
-    const client = await pool.connect();
-    await outboxWakeup.listen();
-    try {
-      await client.query('begin');
-      await client.query(
-        `insert into outbox (id, topic, payload)
-         values ($1, 'test.wakeup', '{}'::jsonb)`,
-        [committedId],
-      );
-      await expect(outboxWakeup.wait(200, signal)).resolves.toBe(false);
-      await client.query('commit');
-      await expect(outboxWakeup.wait(2_000, signal)).resolves.toBe(true);
-
-      await client.query('begin');
-      await client.query(
-        `insert into outbox (id, topic, payload)
-         values ($1, 'test.wakeup', '{}'::jsonb)`,
-        [rolledBackId],
-      );
-      await client.query('rollback');
-      await expect(outboxWakeup.wait(200, signal)).resolves.toBe(false);
-    } finally {
-      await client.query('rollback');
-      client.release();
-    }
-    await pool.query('delete from outbox where id = $1', [committedId]);
-  });
-
-  it('retains active refresh-token lineage while pruning expired runtime rows', async () => {
-    const account = await pool.query<{ account_id: string }>(
-      `select account_id
-       from auth_identities
-       where provider = 'kakao' and provider_subject = '${integrationSubject}'`,
-    );
-    const accountId = account.rows.at(0)?.account_id;
-    if (!accountId) throw new Error('Expected Kakao account');
-    const now = new Date();
-    const parentId = uuidv7();
-    const childId = uuidv7();
-    const expiredId = uuidv7();
-    const publishedId = uuidv7();
-    const failedId = uuidv7();
-    const retainedId = uuidv7();
-    await pool.query(
-      `insert into auth_sessions
-       (id, account_id, token_hash, expires_at, replaced_by_session_id)
-       values
-       ($1, $4, $5, $6, $2),
-       ($2, $4, $7, $8, null),
-       ($3, $4, $9, $6, null)`,
-      [
-        parentId,
-        childId,
-        expiredId,
-        accountId,
-        `parent-${parentId}`,
-        new Date(now.getTime() - 40 * 86_400_000),
-        `child-${childId}`,
-        new Date(now.getTime() + 30 * 86_400_000),
-        `expired-${expiredId}`,
-      ],
-    );
-    await pool.query(
-      `insert into outbox (id, topic, payload, published_at, failed_at)
-       values
-       ($1, 'asset.purge', '{}'::jsonb, $4, null),
-       ($2, 'asset.purge', '{}'::jsonb, null, $5),
-       ($3, 'asset.purge', '{}'::jsonb, $6, null)`,
-      [
-        publishedId,
-        failedId,
-        retainedId,
-        new Date(now.getTime() - 8 * 86_400_000),
-        new Date(now.getTime() - 31 * 86_400_000),
-        new Date(now.getTime() - 86_400_000),
-      ],
-    );
-
-    await retentionCleanup.cleanup(now);
-
-    const sessions = await pool.query<{ id: string }>(
-      'select id from auth_sessions where id = any($1::uuid[]) order by id',
-      [[parentId, childId, expiredId]],
-    );
-    expect(sessions.rows.map(({ id }) => id).sort()).toEqual(
-      [parentId, childId].sort(),
-    );
-    const events = await pool.query<{ id: string }>(
-      'select id from outbox where id = any($1::uuid[]) order by id',
-      [[publishedId, failedId, retainedId]],
-    );
-    expect(events.rows.map(({ id }) => id)).toEqual([retainedId]);
-  });
-
-  it('revokes the access session on logout', async () => {
-    const [sessionId, secret] = refreshToken.split('.');
-    if (!sessionId || !secret) throw new Error('Expected refresh token parts');
-    const wrongSecret = `${secret.startsWith('A') ? 'B' : 'A'}${secret.slice(1)}`;
-
-    await request(baseUrl)
-      .post('/v1/auth/refresh')
-      .send({ refreshToken: `not-a-uuid.${'A'.repeat(43)}` })
-      .expect(401);
-    await request(baseUrl)
-      .post('/v1/auth/logout')
-      .send({ refreshToken: `not-a-uuid.${'A'.repeat(43)}` })
-      .expect(204);
-    await request(baseUrl)
-      .post('/v1/auth/logout')
-      .send({ refreshToken: `${sessionId}.${wrongSecret}` })
-      .expect(204);
-    await request(baseUrl)
-      .post('/graphql')
-      .set('authorization', `Bearer ${accessToken}`)
-      .send({ query: '{ viewer { id } }' })
-      .expect(200)
-      .expect(({ text }) => {
-        expect(text).not.toContain('UNAUTHENTICATED');
-      });
-
-    await request(baseUrl)
-      .post('/v1/auth/logout')
-      .send({ refreshToken })
-      .expect(204);
-    await request(baseUrl)
-      .post('/graphql')
-      .set('authorization', `Bearer ${accessToken}`)
-      .send({ query: '{ viewer { id } }' })
-      .expect(200)
-      .expect(({ text }) => {
-        expect(text).toContain('UNAUTHENTICATED');
-      });
-  });
+  registerAiRuntimeScenarios(() => ({
+    baseUrl,
+    createAiOwner,
+    pool,
+    staleRunRecovery,
+  }));
+  registerWorkerScenarios(() => ({
+    archiveReader,
+    archiveWriter,
+    assetResultConsumer,
+    baseUrl,
+    conversationId,
+    createAiOwner,
+    integrationSubject,
+    normalizationResultOrder,
+    objectDeleteKeyCalls,
+    objectDeletePrefixCalls,
+    objectGetCalls,
+    objectPutCalls,
+    objectStore: objectStore as unknown as ObjectStore,
+    outboxProcessor,
+    outboxWakeup,
+    pool,
+    retentionCleanup,
+    setNormalizationDeleteBarrier: (barrier, key): void => {
+      normalizationDeleteBarrier = barrier;
+      normalizationDeleteBarrierKey = key;
+    },
+    setObjectDeleteError: (error): void => {
+      objectDeleteError = error;
+    },
+    setResolveNormalizationDeleteStarted: (resolve): void => {
+      resolveNormalizationDeleteStarted = resolve;
+    },
+    storedObjects,
+    workerModule,
+  }));
+  registerAuthSessionScenarios(() => ({
+    baseUrl,
+    pool,
+    waitForAuthBarrier,
+  }));
 });

@@ -13,6 +13,7 @@ import type { Environment } from '../../config/environment.js';
 import { storageBucketsFromConfig } from '../../storage/storage-buckets.js';
 import type { AssetRecord } from './assets.repository.js';
 import { AssetsRepository } from './assets.repository.js';
+import { assetKeysFor } from './keys.js';
 
 const localCredentials = {
   accessKeyId: 'test',
@@ -63,17 +64,8 @@ export class AssetsService {
     contentType: string;
     byteSize: number;
   }): Promise<AssetUploadGraphql> => {
-    if (
-      !(await this.repository.ownsConversation(
-        input.accountId,
-        input.conversationId,
-      ))
-    ) {
-      throw new NotFoundException('Conversation not found');
-    }
     const id = uuidv7();
-    const originalKey = `uploads/${input.accountId}/${id}/original`;
-    const asset = await this.repository.create({ ...input, id, originalKey });
+    const { original: originalKey } = assetKeysFor(input.accountId, id);
     const uploadUrl = await getSignedUrl(
       this.#s3,
       new PutObjectCommand({
@@ -85,6 +77,12 @@ export class AssetsService {
       }),
       { expiresIn: 10 * 60 },
     );
+    const asset = await this.repository.createForLiveConversation({
+      ...input,
+      id,
+      originalKey,
+    });
+    if (!asset) throw new NotFoundException('Conversation not found');
     return {
       asset: this.toGraphql(asset),
       uploadUrl,
@@ -102,6 +100,14 @@ export class AssetsService {
     const asset = await this.repository.findOwned(accountId, id);
     return asset ? this.toGraphql(asset) : null;
   };
+
+  public findForConversations = async (
+    assetIds: ReadonlyArray<string>,
+    conversationIds: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<AssetGraphql>> =>
+    (await this.repository.findForConversations(assetIds, conversationIds)).map(
+      this.toGraphql,
+    );
 
   public delete = (accountId: string, id: string): Promise<boolean> =>
     this.repository.delete(accountId, id);

@@ -2,7 +2,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 
 import type { Database } from '../../database/database.module.js';
 import { aiRuns, messageParts, messages } from '../../database/schema.js';
-import type { CatalogService } from '../catalog/catalog.service.js';
+import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import type { CatalogProduct } from '../catalog/types.js';
 import { AiRepository } from './ai.repository.js';
 
@@ -26,6 +26,67 @@ const product: CatalogProduct = {
 };
 
 describe('AiRepository', () => {
+  it('stores only the asset ID in a new image part', async () => {
+    const existingMessageLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const conversationLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000010' }]);
+    const assetLimit = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000014' }]);
+    const query = (
+      limit: typeof existingMessageLimit,
+    ): Readonly<{ from: ReturnType<typeof jest.fn> }> => ({
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({ limit })),
+      })),
+    });
+    const runReturning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000011' }]);
+    const runConflict = jest.fn(() => ({ returning: runReturning }));
+    const runValues = jest.fn(() => ({ onConflictDoNothing: runConflict }));
+    const persistedValues = jest
+      .fn<(value: unknown) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const insert = jest.fn((table: unknown) =>
+      table === aiRuns ? { values: runValues } : { values: persistedValues },
+    );
+    const transaction = {
+      execute: jest.fn(() => Promise.resolve()),
+      insert,
+      select: jest
+        .fn()
+        .mockReturnValueOnce(query(existingMessageLimit))
+        .mockReturnValueOnce(query(conversationLimit))
+        .mockReturnValueOnce(query(assetLimit)),
+    };
+    const repository = new AiRepository({
+      transaction: (
+        callback: (value: typeof transaction) => Promise<boolean>,
+      ) => callback(transaction),
+    } as unknown as Database);
+
+    await repository.beginRun({
+      accountId: '0198a122-0c00-7000-8000-000000000012',
+      assetId: '0198a122-0c00-7000-8000-000000000014',
+      conversationId: '0198a122-0c00-7000-8000-000000000010',
+      runId: '0198a122-0c00-7000-8000-000000000011',
+      text: '',
+      userMessageId: '0198a122-0c00-7000-8000-000000000013',
+    });
+
+    const persistedParts = persistedValues.mock.calls.at(-1)?.at(0);
+    expect(persistedParts).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        payload: { id: '0198a122-0c00-7000-8000-000000000014' },
+      }),
+    ]);
+  });
+
   it('starts an owned conversation run without billing state', async () => {
     const existingMessageLimit = jest
       .fn<() => Promise<Array<{ id: string }>>>()
@@ -76,7 +137,7 @@ describe('AiRepository', () => {
         callback: (value: typeof transaction) => Promise<boolean>,
       ) => callback(transaction),
     } as unknown as Database;
-    const repository = new AiRepository(database, {} as CatalogService);
+    const repository = new AiRepository(database);
 
     await expect(
       repository.beginRun({
@@ -90,7 +151,69 @@ describe('AiRepository', () => {
     ).resolves.toBe(true);
   });
 
-  it('stores a product snapshot with completed recommendations', async () => {
+  it('renews both authoritative lease timestamps', async () => {
+    const returning = jest
+      .fn<(selection: unknown) => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: 'run-1' }]);
+    const where = jest.fn(() => ({ returning }));
+    const set = jest.fn<(value: unknown) => { where: typeof where }>(() => ({
+      where,
+    }));
+    const update = jest.fn(() => ({ set }));
+    const repository = new AiRepository({ update } as unknown as Database);
+    const now = new Date('2026-08-27T00:00:00.000Z');
+
+    await repository.renewRunLease('run-1', now);
+
+    expect(set).toHaveBeenCalledWith({
+      heartbeatAt: now,
+      deadlineAt: new Date('2026-08-27T00:01:00.000Z'),
+    });
+    expect(returning).toHaveBeenCalledWith({ id: aiRuns.id });
+  });
+
+  it('rejects renewal after the reserved lease is lost', async () => {
+    const returning = jest
+      .fn<(selection: unknown) => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const where = jest.fn(() => ({ returning }));
+    const set = jest.fn<(value: unknown) => { where: typeof where }>(() => ({
+      where,
+    }));
+    const update = jest.fn(() => ({ set }));
+    const repository = new AiRepository({ update } as unknown as Database);
+
+    await expect(repository.renewRunLease('run-1')).rejects.toThrow(
+      'AI run lease lost',
+    );
+  });
+
+  it('closes a pre-producer failure in one terminal update', async () => {
+    const where = jest.fn(() => Promise.resolve());
+    const set = jest.fn<(value: unknown) => { where: typeof where }>(() => ({
+      where,
+    }));
+    const update = jest.fn(() => ({ set }));
+    const repository = new AiRepository({ update } as unknown as Database);
+
+    await repository.failRunAndClose('run-1');
+
+    const persisted = set.mock.calls.at(0)?.at(0) as
+      | {
+          status?: string;
+          completedAt?: Date;
+          streamClosedAt?: Date;
+        }
+      | undefined;
+    expect(persisted).toEqual({
+      status: 'failed',
+      completedAt: expect.any(Date),
+      streamClosedAt: expect.any(Date),
+    });
+    expect(persisted?.completedAt).toBe(persisted?.streamClosedAt);
+  });
+
+  it('stores supplied snapshots after completing the reserved run', async () => {
     const returning = jest
       .fn<() => Promise<Array<{ id: string }>>>()
       .mockResolvedValue([{ id: 'run-1' }]);
@@ -118,26 +241,21 @@ describe('AiRepository', () => {
         callback: (value: typeof transaction) => Promise<void>,
       ): Promise<void> => callback(transaction),
     } as unknown as Database;
-    const getProducts = jest.fn(
-      (ids: ReadonlyArray<string>): Promise<Array<CatalogProduct>> =>
-        Promise.resolve(ids.length > 0 ? [product] : []),
-    );
-    const repository = new AiRepository(database, {
-      getProducts,
-    } as unknown as CatalogService);
+    const repository = new AiRepository(database);
 
-    await repository.completeRun(
-      '0198a122-0c00-7000-8000-000000000002',
-      '0198a122-0c00-7000-8000-000000000003',
-      '0198a122-0c00-7000-8000-000000000004',
-      '',
-      [
+    await repository.completeRun({
+      runId: '0198a122-0c00-7000-8000-000000000002',
+      conversationId: '0198a122-0c00-7000-8000-000000000003',
+      messageId: '0198a122-0c00-7000-8000-000000000004',
+      text: '',
+      productRecommendations: [
         {
           productId: product.id,
           aiSummary: '건조함을 줄이는 데 쓸 수 있고 재고가 확인된 립밤이에요.',
+          productSnapshot: toProductGraphql(product),
         },
       ],
-      {
+      askUser: {
         dimension: 'purpose',
         question: '어디에서 사용할 건가요?',
         options: [
@@ -146,10 +264,12 @@ describe('AiRepository', () => {
         ],
         allowFreeText: true,
       },
-      ['oliveyoung'],
-    );
+      providerIds: ['oliveyoung'],
+    });
 
-    expect(getProducts).toHaveBeenCalledWith([product.id]);
+    expect(returning.mock.invocationCallOrder.at(0)).toBeLessThan(
+      insert.mock.invocationCallOrder.at(0) ?? Number.POSITIVE_INFINITY,
+    );
     expect(values.mock.calls.at(-1)?.[0]).toEqual([
       expect.objectContaining({
         kind: 'ask_user',
@@ -163,6 +283,70 @@ describe('AiRepository', () => {
         }),
       }),
     ]);
+  });
+
+  it('rejects completion without inserting after the lease is lost', async () => {
+    const returning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const where = jest.fn(() => ({ returning }));
+    const set = jest.fn(() => ({ where }));
+    const update = jest.fn(() => ({ set }));
+    const insert = jest.fn();
+    const transaction = { update, insert };
+    const database = {
+      transaction: (
+        callback: (value: typeof transaction) => Promise<void>,
+      ): Promise<void> => callback(transaction),
+    } as unknown as Database;
+    const repository = new AiRepository(database);
+
+    await expect(
+      repository.completeRun({
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        text: 'result',
+        productRecommendations: [],
+        askUser: null,
+        providerIds: [],
+      }),
+    ).rejects.toThrow('AI run lease lost');
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('closes a cancelled stream in the terminal status update', async () => {
+    const returning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: 'run-1' }]);
+    const where = jest.fn(() => ({ returning }));
+    const set = jest.fn<(value: unknown) => { where: typeof where }>(() => ({
+      where,
+    }));
+    const update = jest.fn(() => ({ set }));
+    const transaction = { update };
+    const database = {
+      transaction: (
+        callback: (value: typeof transaction) => Promise<unknown>,
+      ): Promise<unknown> => callback(transaction),
+    } as unknown as Database;
+    const repository = new AiRepository(database);
+
+    await repository.cancelRun('account-1', 'conversation-1', 'run-1');
+
+    const persisted = set.mock.calls.at(0)?.at(0) as
+      | {
+          status?: string;
+          completedAt?: Date;
+          streamClosedAt?: Date;
+        }
+      | undefined;
+    expect(persisted).toEqual({
+      status: 'cancelled',
+      completedAt: expect.any(Date),
+      streamClosedAt: expect.any(Date),
+    });
+    expect(persisted?.completedAt).toBe(persisted?.streamClosedAt);
   });
 
   it('reads the provider filter only from the latest assistant clarification', async () => {
@@ -200,7 +384,7 @@ describe('AiRepository', () => {
         .mockReturnValueOnce({ from: latestFrom })
         .mockReturnValueOnce({ from: payloadFrom }),
     } as unknown as Database;
-    const repository = new AiRepository(database, {} as CatalogService);
+    const repository = new AiRepository(database);
 
     await expect(
       repository.pendingProviderIds(

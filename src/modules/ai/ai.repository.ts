@@ -4,30 +4,22 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
 import { DATABASE } from '../../database/database.module.js';
 import {
-  aiRunEvents,
   aiRuns,
   assets,
   conversations,
   messageParts,
   messages,
-  rateLimits,
 } from '../../database/schema.js';
-import { toProductGraphql } from '../catalog/catalog.mapper.js';
-import { CatalogService } from '../catalog/catalog.service.js';
 import { DEFAULT_CONVERSATION_TITLE } from '../conversations/conversation.types.js';
 import type { AiProviderId } from './ai-request.js';
 import { providerIdsSchema } from './ai-request.js';
-import type {
-  AiHistoryMessage,
-  AiProductRecommendation,
-  AskUser,
-} from './ai-stream.adapter.js';
+import type { AiHistoryMessage, CompleteRunInput } from './types.js';
 
 type BeginRunInput = Readonly<{
   accountId: string;
@@ -48,6 +40,8 @@ type NewMessagePart = {
 
 type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
 
+const runLeaseMilliseconds = 60_000;
+
 const providerIdsFromAskUser = (
   payload: unknown,
 ): ReadonlyArray<AiProviderId> => {
@@ -61,10 +55,7 @@ const providerIdsFromAskUser = (
 
 @Injectable()
 export class AiRepository {
-  public constructor(
-    @Inject(DATABASE) private readonly database: Database,
-    private readonly catalog: CatalogService,
-  ) {}
+  public constructor(@Inject(DATABASE) private readonly database: Database) {}
 
   public beginRun = (input: BeginRunInput): Promise<boolean> =>
     this.database.transaction(async (transaction) => {
@@ -88,7 +79,7 @@ export class AiRepository {
           conversationId: input.conversationId,
           status: 'reserved',
           startedAt: now,
-          deadlineAt: new Date(now.getTime() + 60_000),
+          deadlineAt: new Date(now.getTime() + runLeaseMilliseconds),
           heartbeatAt: now,
         })
         .onConflictDoNothing()
@@ -150,14 +141,7 @@ export class AiRepository {
           messageId: input.userMessageId,
           kind: 'image',
           position: parts.length,
-          payload: {
-            id: input.assetId,
-            status: 'PROCESSING',
-            url: null,
-            width: null,
-            height: null,
-            createdAt: now.toISOString(),
-          },
+          payload: { id: input.assetId },
         });
       }
       if (parts.length > 0)
@@ -165,75 +149,58 @@ export class AiRepository {
       return true;
     });
 
-  public completeRun = async (
-    runId: string,
-    conversationId: string,
-    messageId: string,
-    text: string,
-    productRecommendations: ReadonlyArray<AiProductRecommendation>,
-    askUser: AskUser | null,
-    providerIds: ReadonlyArray<AiProviderId> = [],
-  ): Promise<void> => {
-    const productSnapshots = new Map<
-      string,
-      ReturnType<typeof toProductGraphql>
-    >();
-    for (const product of await this.catalog.getProducts(
-      productRecommendations.map(({ productId }) => productId),
-    )) {
-      if (product) productSnapshots.set(product.id, toProductGraphql(product));
-    }
-    return this.database.transaction(async (transaction) => {
+  public completeRun = (input: CompleteRunInput): Promise<void> =>
+    this.database.transaction(async (transaction) => {
       const updated = await transaction
         .update(aiRuns)
         .set({ status: 'completed', completedAt: new Date() })
-        .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
+        .where(and(eq(aiRuns.id, input.runId), eq(aiRuns.status, 'reserved')))
         .returning({ id: aiRuns.id });
-      if (updated.length === 0) return;
+      if (updated.length !== 1)
+        throw new ConflictException('AI run lease lost');
       await transaction.insert(messages).values({
-        id: messageId,
-        conversationId,
+        id: input.messageId,
+        conversationId: input.conversationId,
         role: 'assistant',
-        runId,
+        runId: input.runId,
         status: 'completed',
       });
       const parts: Array<NewMessagePart> = [];
-      if (text.length > 0) {
+      if (input.text.length > 0) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.messageId,
           kind: 'text',
           position: parts.length,
-          payload: { text },
+          payload: { text: input.text },
         });
       }
-      if (askUser) {
+      if (input.askUser) {
         parts.push({
           id: uuidv7(),
-          messageId,
+          messageId: input.messageId,
           kind: 'ask_user',
           position: parts.length,
           payload:
-            providerIds.length > 0 ? { ...askUser, providerIds } : askUser,
+            input.providerIds.length > 0
+              ? { ...input.askUser, providerIds: input.providerIds }
+              : input.askUser,
         });
       }
       const productPosition = parts.length;
       parts.push(
-        ...productRecommendations.map(({ productId, aiSummary }, index) => ({
-          id: uuidv7(),
-          messageId,
-          kind: 'product_reference',
-          position: productPosition + index,
-          payload: {
-            productId,
-            aiSummary,
-            productSnapshot: productSnapshots.get(productId) ?? null,
-          },
-        })),
+        ...input.productRecommendations.map(
+          ({ productId, aiSummary, productSnapshot }, index) => ({
+            id: uuidv7(),
+            messageId: input.messageId,
+            kind: 'product_reference',
+            position: productPosition + index,
+            payload: { productId, aiSummary, productSnapshot },
+          }),
+        ),
       );
       await transaction.insert(messageParts).values(parts);
     });
-  };
 
   public pendingProviderIds = async (
     accountId: string,
@@ -377,6 +344,14 @@ export class AiRepository {
       .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
   };
 
+  public failRunAndClose = async (runId: string): Promise<void> => {
+    const now = new Date();
+    await this.database
+      .update(aiRuns)
+      .set({ status: 'failed', completedAt: now, streamClosedAt: now })
+      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
+  };
+
   public isRunCancelled = async (runId: string): Promise<boolean> => {
     const runs = await this.database
       .select({ status: aiRuns.status })
@@ -413,9 +388,10 @@ export class AiRepository {
     runId: string,
   ): Promise<CancelRunResult> =>
     this.database.transaction(async (transaction) => {
+      const now = new Date();
       const runs = await transaction
         .update(aiRuns)
-        .set({ status: 'cancelled', completedAt: new Date() })
+        .set({ status: 'cancelled', completedAt: now, streamClosedAt: now })
         .where(
           and(
             eq(aiRuns.id, runId),
@@ -444,64 +420,18 @@ export class AiRepository {
         : 'terminal';
     });
 
-  public heartbeatRun = async (
+  public renewRunLease = async (
     runId: string,
     now = new Date(),
   ): Promise<void> => {
-    await this.database
+    const updated = await this.database
       .update(aiRuns)
-      .set({ heartbeatAt: now })
-      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
-  };
-
-  public recoverStaleReservedRuns = (now = new Date()): Promise<number> =>
-    this.database.transaction(async (transaction) => {
-      const heartbeatCutoff = new Date(now.getTime() - 120_000);
-      const staleRuns = await transaction
-        .select({ id: aiRuns.id })
-        .from(aiRuns)
-        .where(
-          and(
-            eq(aiRuns.status, 'reserved'),
-            or(
-              lte(aiRuns.deadlineAt, now),
-              lte(aiRuns.heartbeatAt, heartbeatCutoff),
-            ),
-          ),
-        )
-        .for('update', { skipLocked: true });
-      let recovered = 0;
-      for (const stale of staleRuns) {
-        const runs = await transaction
-          .update(aiRuns)
-          .set({
-            status: 'failed',
-            completedAt: now,
-            streamClosedAt: now,
-          })
-          .where(and(eq(aiRuns.id, stale.id), eq(aiRuns.status, 'reserved')))
-          .returning({ id: aiRuns.id });
-        const run = runs.at(0);
-        if (!run) continue;
-        recovered += 1;
-      }
-      return recovered;
-    });
-
-  public cleanupRuntimeState = async (now = new Date()): Promise<void> => {
-    await Promise.all([
-      this.database.delete(aiRunEvents).where(lte(aiRunEvents.expiresAt, now)),
-      this.database
-        .delete(rateLimits)
-        .where(
-          and(
-            lte(rateLimits.windowExpiresAt, now),
-            or(
-              isNull(rateLimits.blockedUntil),
-              lte(rateLimits.blockedUntil, now),
-            ),
-          ),
-        ),
-    ]);
+      .set({
+        heartbeatAt: now,
+        deadlineAt: new Date(now.getTime() + runLeaseMilliseconds),
+      })
+      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')))
+      .returning({ id: aiRuns.id });
+    if (updated.length !== 1) throw new ConflictException('AI run lease lost');
   };
 }

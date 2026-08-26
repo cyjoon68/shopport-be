@@ -8,6 +8,7 @@ import type { Database } from '../database/database.module.js';
 import { DATABASE } from '../database/database.module.js';
 import { accounts, assets, conversations, outbox } from '../database/schema.js';
 import { ObjectStore } from '../storage/object-store.js';
+import { report } from './worker-process.js';
 
 const accountPayload = z.object({ accountId: z.uuid() });
 const conversationPayload = accountPayload.extend({ conversationId: z.uuid() });
@@ -56,17 +57,16 @@ export class OutboxProcessor {
           );
       } catch (error) {
         const attemptCount = event.attemptCount + 1;
-        const failedAt = attemptCount >= 10 ? new Date() : null;
         const delaySeconds = Math.min(2 ** attemptCount, 3_600);
-        await this.database
+        const message: unknown =
+          error instanceof Error ? error.message : 'Worker failure';
+        const lastError = String(message).replaceAll('\0', '').slice(0, 500);
+        const persisted = await this.database
           .update(outbox)
           .set({
             attemptCount,
-            failedAt,
-            lastError: (error instanceof Error
-              ? error.message
-              : 'Worker failure'
-            ).slice(0, 500),
+            failedAt: null,
+            lastError,
             lockedBy: null,
             lockedUntil: null,
             nextAttemptAt: new Date(Date.now() + delaySeconds * 1_000),
@@ -77,7 +77,15 @@ export class OutboxProcessor {
               eq(outbox.lockedBy, this.workerId),
               isNull(outbox.publishedAt),
             ),
-          );
+          )
+          .returning({ attemptCount: outbox.attemptCount });
+        if (persisted.at(0)?.attemptCount === 10) {
+          try {
+            report(`outbox:${event.topic}`, error);
+          } catch {
+            continue;
+          }
+        }
       }
     }
     return events.length > 0;
@@ -91,7 +99,7 @@ export class OutboxProcessor {
         milliseconds: sql<string>`extract(epoch from (${availableAt} - now())) * 1000`,
       })
       .from(outbox)
-      .where(and(isNull(outbox.publishedAt), isNull(outbox.failedAt)))
+      .where(isNull(outbox.publishedAt))
       .orderBy(availableAt)
       .limit(1);
     const milliseconds = Number(rows.at(0)?.milliseconds);
@@ -112,7 +120,6 @@ export class OutboxProcessor {
         .where(
           and(
             isNull(outbox.publishedAt),
-            isNull(outbox.failedAt),
             lte(outbox.nextAttemptAt, sql`now()`),
             or(isNull(outbox.lockedUntil), lte(outbox.lockedUntil, sql`now()`)),
           ),

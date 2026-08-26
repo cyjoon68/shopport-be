@@ -25,6 +25,7 @@
     "start:outbox-worker": "node --env-file-if-exists=.env dist/src/outbox-worker.js",
     "start:worker": "node --env-file-if-exists=.env dist/src/worker.js",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config jest.config.mjs",
+    "test:coverage": "pnpm test --coverage",
     "test:integration": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config test/jest-integration.config.mjs --runInBand",
     "typecheck": "tsc --noEmit"
   },

@@ -22,6 +22,13 @@ type DurableEntry = Readonly<{ offset: string; chunk: StreamChunk }>;
 type EventRow = Readonly<{ id: string; chunk: unknown }>;
 
 const readPageSize = 128;
+const maximumSignedBigint = 9_223_372_036_854_775_807n;
+
+export const parseExternalReplayOffset = (offset: string): string | null => {
+  if (!/^\d{1,19}$/u.test(offset)) return null;
+  const parsed = BigInt(offset);
+  return parsed <= maximumSignedBigint ? parsed.toString() : null;
+};
 
 const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -38,9 +45,10 @@ const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener('abort', done, { once: true });
   });
 
-const offsetFor = (offset: string): bigint | null => {
-  if (offset === '-1') return 0n;
-  return /^\d{1,20}$/u.test(offset) ? BigInt(offset) : null;
+const offsetFor = (offset: string, internal: boolean): bigint | null => {
+  if (offset === '-1' && internal) return 0n;
+  const parsed = parseExternalReplayOffset(offset);
+  return parsed === null ? null : BigInt(parsed);
 };
 
 export class PostgresStreamDurability implements StreamDurability {
@@ -70,7 +78,7 @@ export class PostgresStreamDurability implements StreamDurability {
     offset: string,
     signal?: AbortSignal,
   ): AsyncIterable<DurableEntry> => {
-    let cursor = offsetFor(offset);
+    let cursor = offsetFor(offset, this.resumeOffset === null);
     let buffered: Array<DurableEntry> = [];
     return {
       [Symbol.asyncIterator]: () => ({

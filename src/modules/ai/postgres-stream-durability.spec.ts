@@ -2,11 +2,24 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { EventType, type StreamChunk } from '@tanstack/ai';
 import type { Pool } from 'pg';
 
-import { PostgresStreamDurability } from './postgres-stream-durability.js';
+import {
+  parseExternalReplayOffset,
+  PostgresStreamDurability,
+} from './postgres-stream-durability.js';
 
 const runId = '0198a122-0c00-7000-8000-000000000001';
 
 describe('PostgresStreamDurability', () => {
+  it('parses external replay offsets to one canonical representation', () => {
+    expect(parseExternalReplayOffset('00042')).toBe('42');
+    expect(parseExternalReplayOffset('9223372036854775807')).toBe(
+      '9223372036854775807',
+    );
+    for (const offset of ['-1', '42-0', '+1', '1.5', '9223372036854775808']) {
+      expect(parseExternalReplayOffset(offset)).toBeNull();
+    }
+  });
+
   it('preserves append offsets', async () => {
     const query = jest
       .fn<
@@ -109,7 +122,7 @@ describe('PostgresStreamDurability', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('ends a legacy Redis offset without querying PostgreSQL', async () => {
+  it('ends a legacy stream offset without querying PostgreSQL', async () => {
     const query = jest.fn();
     const durability = new PostgresStreamDurability(
       { query } as unknown as Pool,
@@ -121,5 +134,89 @@ describe('PostgresStreamDurability', () => {
       durability.read('42-0')[Symbol.asyncIterator]().next(),
     ).resolves.toEqual({ done: true, value: undefined });
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('uses the internal first-event sentinel only for a fresh stream', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      null,
+    );
+
+    await expect(
+      durability.read('-1')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $3'), [
+      runId,
+      '0',
+      128,
+    ]);
+  });
+
+  it('rejects an external first-event sentinel before querying PostgreSQL', async () => {
+    const query = jest.fn();
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '-1',
+    );
+
+    await expect(
+      durability.read('-1')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('accepts the largest PostgreSQL replay offset', async () => {
+    const query = jest
+      .fn<
+        (text: string, values?: Array<unknown>) => Promise<{ rows: unknown[] }>
+      >()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+    const durability = new PostgresStreamDurability(
+      { query } as unknown as Pool,
+      runId,
+      '9223372036854775807',
+    );
+
+    await expect(
+      durability.read('9223372036854775807')[Symbol.asyncIterator]().next(),
+    ).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $3'), [
+      runId,
+      '9223372036854775807',
+      128,
+    ]);
+  });
+
+  it('rejects invalid replay offsets before querying PostgreSQL', async () => {
+    for (const offset of ['-2', '+1', '1.5', '9223372036854775808']) {
+      const query = jest
+        .fn<
+          (
+            text: string,
+            values?: Array<unknown>,
+          ) => Promise<{ rows: unknown[] }>
+        >()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ stream_closed_at: new Date() }] });
+      const durability = new PostgresStreamDurability(
+        { query } as unknown as Pool,
+        runId,
+        offset,
+      );
+
+      await expect(
+        durability.read(offset)[Symbol.asyncIterator]().next(),
+      ).resolves.toEqual({ done: true, value: undefined });
+      expect(query).not.toHaveBeenCalled();
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { Args, Context, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { z } from 'zod';
 
@@ -62,13 +63,23 @@ export class AssetsResolver {
         userErrors: [invalid('이미지는 JPEG, PNG, HEIC 15MB 이하여야 합니다.')],
       };
     }
-    return {
-      upload: await this.assets.createUpload({
-        accountId: viewerIdFrom(request),
-        ...parsed.data,
-      }),
-      userErrors: [],
-    };
+    try {
+      return {
+        upload: await this.assets.createUpload({
+          accountId: viewerIdFrom(request),
+          ...parsed.data,
+        }),
+        userErrors: [],
+      };
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) throw error;
+      return {
+        upload: null,
+        userErrors: [
+          { code: 'NOT_FOUND', message: error.message, path: ['input'] },
+        ],
+      };
+    }
   }
 
   @Mutation('deleteAsset')
@@ -82,9 +93,21 @@ export class AssetsResolver {
         success: false,
         userErrors: [invalid('자산 ID가 올바르지 않습니다.')],
       };
-    return {
-      success: await this.assets.delete(viewerIdFrom(request), parsed.data.id),
-      userErrors: [],
-    };
+    const success = await this.assets.delete(
+      viewerIdFrom(request),
+      parsed.data.id,
+    );
+    return success
+      ? { success, userErrors: [] }
+      : {
+          success,
+          userErrors: [
+            {
+              code: 'NOT_FOUND',
+              message: 'Asset not found',
+              path: ['input'],
+            },
+          ],
+        };
   }
 }

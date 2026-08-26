@@ -3,17 +3,20 @@ import type { StreamChunk } from '@tanstack/ai';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { AssetsService } from '../assets/assets.service.js';
+import type { CatalogService } from '../catalog/catalog.service.js';
+import type { CatalogProduct } from '../catalog/types.js';
 import type { AiRepository } from './ai.repository.js';
 import { AiService } from './ai.service.js';
 import type { AiProviderId } from './ai-request.js';
-import type {
-  AiHistoryMessage,
-  AiStreamAdapter,
-  AiStreamInput,
-  AiStreamLifecycle,
-} from './ai-stream.adapter.js';
+import type { AiStreamAdapter } from './ai-stream.adapter.js';
 import type { AiToolSession } from './ai-tools.js';
 import type { AiTools } from './ai-tools.js';
+import type {
+  AiHistoryMessage,
+  AiStreamInput,
+  AiStreamLifecycle,
+  CompleteRunInput,
+} from './types.js';
 
 const emptyStream = async function* (): AsyncIterable<StreamChunk> {
   await Promise.resolve();
@@ -22,10 +25,12 @@ const emptyStream = async function* (): AsyncIterable<StreamChunk> {
 
 type ServiceFixture = Readonly<{
   createSession: (providerIds: ReadonlyArray<AiProviderId>) => AiToolSession;
-  pendingProviderIds: (
-    accountId: string,
-    conversationId: string,
-  ) => Promise<ReadonlyArray<AiProviderId>>;
+  pendingProviderIds: jest.MockedFunction<
+    (
+      accountId: string,
+      conversationId: string,
+    ) => Promise<ReadonlyArray<AiProviderId>>
+  >;
   conversationHistory: jest.MockedFunction<
     (
       accountId: string,
@@ -36,6 +41,22 @@ type ServiceFixture = Readonly<{
   replaceDefaultTitle: jest.MockedFunction<
     (accountId: string, conversationId: string, title: string) => Promise<void>
   >;
+  createStream: jest.MockedFunction<
+    (
+      input: AiStreamInput,
+      tools: AiToolSession,
+      lifecycle: AiStreamLifecycle,
+    ) => AsyncIterable<StreamChunk>
+  >;
+  completeRun: jest.MockedFunction<(input: CompleteRunInput) => Promise<void>>;
+  failRun: jest.MockedFunction<(runId: string) => Promise<void>>;
+  failRunAndClose: jest.MockedFunction<(runId: string) => Promise<void>>;
+  getProducts: jest.MockedFunction<
+    (
+      ids: ReadonlyArray<string>,
+    ) => Promise<ReadonlyArray<CatalogProduct | null>>
+  >;
+  renewRunLease: jest.MockedFunction<(runId: string) => Promise<void>>;
   service: AiService;
 }>;
 
@@ -63,7 +84,16 @@ const createService = (): ServiceFixture => {
   const beginRun = jest
     .fn<(input: unknown) => Promise<boolean>>()
     .mockResolvedValue(true);
-  const heartbeatRun = jest
+  const renewRunLease = jest
+    .fn<(runId: string) => Promise<void>>()
+    .mockResolvedValue();
+  const completeRun = jest
+    .fn<(input: CompleteRunInput) => Promise<void>>()
+    .mockResolvedValue();
+  const failRun = jest
+    .fn<(runId: string) => Promise<void>>()
+    .mockResolvedValue();
+  const failRunAndClose = jest
     .fn<(runId: string) => Promise<void>>()
     .mockResolvedValue();
   const pendingProviderIds = jest
@@ -105,7 +135,10 @@ const createService = (): ServiceFixture => {
     .mockReturnValue(emptyStream());
   const repository = {
     beginRun,
-    heartbeatRun,
+    renewRunLease,
+    completeRun,
+    failRun,
+    failRunAndClose,
     pendingProviderIds,
     conversationHistory,
     replaceDefaultTitle,
@@ -118,22 +151,69 @@ const createService = (): ServiceFixture => {
     generateTitle,
     createStream,
   } as unknown as AiStreamAdapter;
+  const getProducts = jest
+    .fn<
+      (
+        ids: ReadonlyArray<string>,
+      ) => Promise<ReadonlyArray<CatalogProduct | null>>
+    >()
+    .mockResolvedValue([]);
   return {
     service: new AiService(
       repository,
       { createSession } as unknown as AiTools,
       {} as AssetsService,
+      { getProducts } as unknown as CatalogService,
       stream,
     ),
     conversationHistory,
     createSession,
     generateTitle,
+    createStream,
+    completeRun,
+    failRun,
+    failRunAndClose,
+    getProducts,
     pendingProviderIds,
     replaceDefaultTitle,
+    renewRunLease,
   };
 };
 
+const catalogProduct: CatalogProduct = {
+  id: '0198a122-0c00-7000-8000-000000000001',
+  providerId: 'daiso',
+  productCode: 'lip-balm',
+  title: '립밤',
+  imageUrl: 'https://example.com/lip-balm.jpg',
+  affiliate: false,
+  relevanceBucket: 3,
+  inStock: true,
+  totalAmountMinor: '1000',
+  deliveryEstimateDays: null,
+  ratingConfidence: 1,
+  freshnessEpochMs: 1_786_460_400_000,
+  outboundUrl: 'https://example.com/lip-balm',
+  store: null,
+  inventory: null,
+  evidence: [],
+};
+
 describe('AiService provider filters', () => {
+  it('closes a pre-producer failure without renewing the initial lease', async () => {
+    const fixture = createService();
+    const request = requestFor();
+    fixture.pendingProviderIds.mockRejectedValue(new Error('filters failed'));
+
+    await expect(
+      fixture.service.start(request.accountId, request.body),
+    ).rejects.toThrow('filters failed');
+
+    expect(fixture.renewRunLease).not.toHaveBeenCalled();
+    expect(fixture.failRun).not.toHaveBeenCalled();
+    expect(fixture.failRunAndClose).toHaveBeenCalledTimes(1);
+  });
+
   it('uses an explicit empty filter instead of a pending clarification filter', async () => {
     const { service, createSession, pendingProviderIds } = createService();
     const request = requestFor([]);
@@ -187,5 +267,40 @@ describe('AiService provider filters', () => {
     await fixture.service.start(request.accountId, request.body);
 
     expect(fixture.generateTitle).not.toHaveBeenCalled();
+  });
+
+  it('maps catalog snapshots before passing completion to the repository', async () => {
+    const fixture = createService();
+    const request = requestFor([]);
+    fixture.getProducts.mockResolvedValue([catalogProduct]);
+
+    await fixture.service.start(request.accountId, request.body);
+    const lifecycle = fixture.createStream.mock.calls.at(0)?.[2];
+    if (!lifecycle) throw new Error('Expected stream lifecycle');
+    await lifecycle.onComplete({
+      messageId: '0198a122-0c00-7000-8000-000000000004',
+      text: '립밤을 찾았어요.',
+      productRecommendations: [
+        {
+          productId: catalogProduct.id,
+          aiSummary: '보습이 필요한 외출용으로 적합해서 추천해요.',
+        },
+      ],
+      askUser: null,
+    });
+
+    expect(fixture.getProducts).toHaveBeenCalledWith([catalogProduct.id]);
+    expect(fixture.completeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        productRecommendations: [
+          expect.objectContaining({
+            productId: catalogProduct.id,
+            productSnapshot: expect.objectContaining({
+              id: catalogProduct.id,
+            }),
+          }),
+        ],
+      }),
+    );
   });
 });

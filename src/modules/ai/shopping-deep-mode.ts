@@ -1,4 +1,4 @@
-import type { ClarificationDimension } from './ai-stream.adapter.js';
+import type { ClarificationDimension } from './types.js';
 
 export const shoppingAmbiguityThreshold = 0.2;
 export const shoppingRequestKinds = ['shopping', 'other'] as const;

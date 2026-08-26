@@ -27,7 +27,10 @@ import {
   runIdSchema,
   storageRunIdFor,
 } from './ai-request.js';
-import { PostgresStreamDurability } from './postgres-stream-durability.js';
+import {
+  parseExternalReplayOffset,
+  PostgresStreamDurability,
+} from './postgres-stream-durability.js';
 
 const resumeQuerySchema = z.object({
   runId: runIdSchema,
@@ -38,6 +41,12 @@ const cancelSchema = z.strictObject({
   threadId: z.uuid(),
   runId: runIdSchema,
 });
+
+const replayOffsetFrom = (offset: string): string => {
+  const parsed = parseExternalReplayOffset(offset);
+  if (parsed === null) throw new BadRequestException('Invalid replay request');
+  return parsed;
+};
 
 const pipeResponse = async (
   source: Response,
@@ -86,14 +95,16 @@ export class AiController {
   ): Promise<void> {
     try {
       const reference = parseRunReference(body);
-      const offset = request.header('last-event-id') ?? null;
-      if (offset !== null) {
+      const requestedOffset = request.header('last-event-id') ?? null;
+      if (requestedOffset !== null) {
         await this.ai.assertOwnedRun(
           viewerIdFrom(request),
           reference.storageRunId,
           reference.threadId,
         );
       }
+      const offset =
+        requestedOffset === null ? null : replayOffsetFrom(requestedOffset);
       const durability = new PostgresStreamDurability(
         this.pool,
         reference.storageRunId,
@@ -129,10 +140,13 @@ export class AiController {
       throw new BadRequestException('Invalid replay request');
     const storageRunId = storageRunIdFor(parsed.data.runId);
     await this.ai.assertOwnedRun(viewerIdFrom(request), storageRunId);
+    const offset = replayOffsetFrom(
+      request.header('last-event-id') ?? parsed.data.offset,
+    );
     const durability = new PostgresStreamDurability(
       this.pool,
       storageRunId,
-      request.header('last-event-id') ?? parsed.data.offset,
+      offset,
     );
     await pipeResponse(resumeHttpResponse({ adapter: durability }), response);
   }

@@ -51,6 +51,7 @@ export const authIdentities = pgTable(
       table.provider,
       table.providerSubject,
     ),
+    index('auth_identities_account_id_idx').on(table.accountId),
   ],
 );
 
@@ -69,6 +70,7 @@ export const authSessions = pgTable(
   },
   (table) => [
     unique('auth_sessions_token_hash_key').on(table.tokenHash),
+    index('auth_sessions_account_id_idx').on(table.accountId),
     index('auth_sessions_expires_at_idx').on(table.expiresAt),
     index('auth_sessions_replaced_by_session_id_idx')
       .on(table.replacedBySessionId)
@@ -121,6 +123,8 @@ export const aiRuns = pgTable(
     index('ai_runs_stale_reserved_idx')
       .on(table.deadlineAt, table.heartbeatAt)
       .where(sql`${table.status} = 'reserved'`),
+    index('ai_runs_account_id_idx').on(table.accountId),
+    index('ai_runs_conversation_id_idx').on(table.conversationId),
   ],
 );
 
@@ -163,29 +167,62 @@ export const rateLimits = pgTable(
   ],
 );
 
-export const messages = pgTable('messages', {
-  id: uuid('id').notNull(),
-  conversationId: uuid('conversation_id')
-    .notNull()
-    .references(() => conversations.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(),
-  runId: uuid('run_id'),
-  status: text('status').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    runId: uuid('run_id'),
+    status: text('status').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check('messages_role_check', sql`${table.role} in ('user', 'assistant')`),
+    check(
+      'messages_status_check',
+      sql`${table.status} in ('pending', 'completed', 'failed')`,
+    ),
+    index('messages_created_id_idx').on(table.createdAt, table.id),
+    index('messages_conversation_created_idx').on(
+      table.conversationId,
+      table.createdAt.desc(),
+      table.id,
+    ),
+  ],
+);
 
-export const messageParts = pgTable('message_parts', {
-  id: uuid('id').primaryKey(),
-  messageId: uuid('message_id').notNull(),
-  kind: text('kind').notNull(),
-  position: integer('position').notNull(),
-  payload: jsonb('payload').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const messageParts = pgTable(
+  'message_parts',
+  {
+    id: uuid('id').primaryKey(),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    position: integer('position').notNull(),
+    payload: jsonb('payload').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      'message_parts_kind_check',
+      sql`${table.kind} in ('text', 'image', 'product_reference', 'tool_status', 'ask_user')`,
+    ),
+    check('message_parts_position_check', sql`${table.position} >= 0`),
+    unique('message_parts_message_id_position_key').on(
+      table.messageId,
+      table.position,
+    ),
+    index('message_parts_message_id_idx').on(table.messageId),
+  ],
+);
 
 export const assets = pgTable(
   'assets',
@@ -215,6 +252,7 @@ export const assets = pgTable(
       table.accountId,
       table.createdAt.desc(),
     ),
+    index('assets_conversation_id_idx').on(table.conversationId),
   ],
 );
 
@@ -229,7 +267,14 @@ export const savedProducts = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.accountId, table.productId] })],
+  (table) => [
+    primaryKey({ columns: [table.accountId, table.productId] }),
+    index('saved_products_account_saved_product_idx').on(
+      table.accountId,
+      table.savedAt.desc(),
+      table.productId.desc(),
+    ),
+  ],
 );
 
 export const catalogMetadata = pgTable(
@@ -299,13 +344,10 @@ export const outbox = pgTable(
     check('outbox_attempt_count_check', sql`${table.attemptCount} >= 0`),
     index('outbox_ready_idx')
       .on(table.nextAttemptAt, table.createdAt, table.id)
-      .where(sql`${table.publishedAt} is null and ${table.failedAt} is null`),
+      .where(sql`${table.publishedAt} is null`),
     index('outbox_published_retention_idx')
       .on(table.publishedAt)
       .where(sql`${table.publishedAt} is not null`),
-    index('outbox_failed_retention_idx')
-      .on(table.failedAt)
-      .where(sql`${table.failedAt} is not null`),
   ],
 );
 
@@ -338,5 +380,6 @@ export const archiveManifests = pgTable(
       table.conversationId,
       table.fromAt,
     ),
+    index('archive_manifests_account_id_idx').on(table.accountId),
   ],
 );
