@@ -24,6 +24,12 @@ type EventRow = Readonly<{ id: string; chunk: unknown }>;
 const readPageSize = 128;
 const maximumSignedBigint = 9_223_372_036_854_775_807n;
 
+export const parseExternalReplayOffset = (offset: string): string | null => {
+  if (!/^\d{1,19}$/u.test(offset)) return null;
+  const parsed = BigInt(offset);
+  return parsed <= maximumSignedBigint ? parsed.toString() : null;
+};
+
 const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) {
@@ -41,8 +47,8 @@ const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
 
 const offsetFor = (offset: string, internal: boolean): bigint | null => {
   if (offset === '-1' && internal) return 0n;
-  const parsed = /^\d{1,19}$/u.test(offset) ? BigInt(offset) : null;
-  return parsed !== null && parsed <= maximumSignedBigint ? parsed : null;
+  const parsed = parseExternalReplayOffset(offset);
+  return parsed === null ? null : BigInt(parsed);
 };
 
 export class PostgresStreamDurability implements StreamDurability {

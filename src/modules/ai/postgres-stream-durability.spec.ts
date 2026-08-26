@@ -2,11 +2,24 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { EventType, type StreamChunk } from '@tanstack/ai';
 import type { Pool } from 'pg';
 
-import { PostgresStreamDurability } from './postgres-stream-durability.js';
+import {
+  parseExternalReplayOffset,
+  PostgresStreamDurability,
+} from './postgres-stream-durability.js';
 
 const runId = '0198a122-0c00-7000-8000-000000000001';
 
 describe('PostgresStreamDurability', () => {
+  it('parses external replay offsets to one canonical representation', () => {
+    expect(parseExternalReplayOffset('00042')).toBe('42');
+    expect(parseExternalReplayOffset('9223372036854775807')).toBe(
+      '9223372036854775807',
+    );
+    for (const offset of ['-1', '42-0', '+1', '1.5', '9223372036854775808']) {
+      expect(parseExternalReplayOffset(offset)).toBeNull();
+    }
+  });
+
   it('preserves append offsets', async () => {
     const query = jest
       .fn<

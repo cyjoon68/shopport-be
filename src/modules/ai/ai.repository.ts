@@ -351,6 +351,14 @@ export class AiRepository {
       .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
   };
 
+  public failRunAndClose = async (runId: string): Promise<void> => {
+    const now = new Date();
+    await this.database
+      .update(aiRuns)
+      .set({ status: 'failed', completedAt: now, streamClosedAt: now })
+      .where(and(eq(aiRuns.id, runId), eq(aiRuns.status, 'reserved')));
+  };
+
   public isRunCancelled = async (runId: string): Promise<boolean> => {
     const runs = await this.database
       .select({ status: aiRuns.status })

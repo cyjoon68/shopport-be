@@ -37,7 +37,6 @@ export class AiService {
       assetId: request.assetId,
     });
     if (!began) throw new ConflictException('Run already exists');
-    await this.repository.renewRunLease(request.storageRunId);
     try {
       const providerIds = request.providerIdsSpecified
         ? request.providerIds
@@ -114,7 +113,7 @@ export class AiService {
         },
       );
     } catch (error) {
-      await this.repository.failRun(request.storageRunId);
+      await this.repository.failRunAndClose(request.storageRunId);
       throw error;
     }
   };

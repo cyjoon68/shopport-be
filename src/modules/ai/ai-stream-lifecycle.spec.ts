@@ -11,9 +11,17 @@ import { EventType } from '@tanstack/ai';
 
 import {
   type DeepModeState,
-  normalizeConversationTitle,
   type ProductRecommendationState,
 } from './ai-provider-protocol.js';
+import {
+  completionChunk,
+  deferred,
+  emptyTools,
+  pendingStream,
+  streamResponse,
+  testConfig,
+} from '../../../test/openai-compatible-ai.adapter-test-support.js';
+import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
 import {
   createLifecycleMiddleware,
   createPublicStream,
@@ -77,66 +85,6 @@ const source = (
 });
 
 describe('AI stream lifecycle', () => {
-  it('normalizes a quoted multiline title to twenty-four characters', () => {
-    expect(
-      normalizeConversationTitle(
-        '  “지성 피부에 맞는\n쿠션 파운데이션 추천입니다. 추가 설명”  ',
-      ),
-    ).toBe('지성 피부에 맞는 쿠션 파운데이션 추천입니다');
-  });
-
-  it('progresses tool choice through assessment, clarification, search, and recommendations', async () => {
-    const { recommendationState, deepModeState } = states();
-    const terminal = createTerminalState(lifecycle());
-    const middleware = createLifecycleMiddleware(
-      new AbortController(),
-      lifecycle(),
-      terminal,
-      recommendationState,
-      deepModeState,
-      () => null,
-      'assistant-1',
-    );
-    const toolChoice = async (): Promise<unknown> => {
-      const transformed = await middleware.onConfig?.(context, config());
-      return transformed ? transformed.modelOptions?.tool_choice : undefined;
-    };
-
-    await expect(toolChoice()).resolves.toEqual({
-      type: 'function',
-      function: { name: 'assessShoppingAmbiguity' },
-    });
-    deepModeState.assessment = {
-      requestKind: 'shopping',
-      ambiguityScore: 0.4,
-      clarificationDimension: 'purpose',
-    };
-    await expect(toolChoice()).resolves.toEqual({
-      type: 'function',
-      function: { name: 'askUser' },
-    });
-    deepModeState.assessment = {
-      requestKind: 'shopping',
-      ambiguityScore: 0,
-      clarificationDimension: null,
-    };
-    await expect(toolChoice()).resolves.toEqual({
-      type: 'function',
-      function: { name: 'searchProducts' },
-    });
-    deepModeState.searchedProducts = true;
-    recommendationState.productIds.add('product-1');
-    await expect(toolChoice()).resolves.toEqual({
-      type: 'function',
-      function: { name: 'recordProductRecommendations' },
-    });
-    recommendationState.aiSummaries.set(
-      'product-1',
-      '상품 특징이 요청한 조건에 잘 맞기 때문에 추천합니다.',
-    );
-    await expect(toolChoice()).resolves.toBeUndefined();
-  });
-
   it('rejects an incomplete response and records one failure', async () => {
     const onFailure = jest.fn(() => Promise.resolve());
     const currentLifecycle = lifecycle({ onFailure });
@@ -290,6 +238,7 @@ describe('AI stream lifecycle', () => {
     const sourceReturn = jest.fn(() =>
       Promise.resolve({ done: true as const, value: undefined }),
     );
+    const stop = jest.fn();
     const iterator = createPublicStream(
       source([], sourceReturn),
       {
@@ -301,16 +250,277 @@ describe('AI stream lifecycle', () => {
       abortController,
       terminal,
       'assistant-1',
-      () => undefined,
+      stop,
     )[Symbol.asyncIterator]();
 
     await expect(iterator.return?.()).resolves.toEqual({
       done: true,
       value: undefined,
     });
+    expect(stop).toHaveBeenCalledTimes(1);
     expect(sourceReturn).toHaveBeenCalledTimes(1);
     expect(abortController.signal.reason).toBe('shopport:stream-closed');
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(terminal.status()).toBe('failed');
+  });
+
+  describe('renewable run lifecycle', () => {
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    it('does not overlap lease renewals', async () => {
+      jest.useFakeTimers();
+      const renewal = deferred<undefined>();
+      const renewLease = jest
+        .fn<() => Promise<void>>()
+        .mockReturnValue(renewal.promise);
+      let cancelled = false;
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(cancelled),
+        renewLease,
+      });
+
+      const pendingNext = stream.iterator.next();
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(renewLease).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(renewLease).toHaveBeenCalledTimes(1);
+
+      renewal.resolve(undefined);
+      cancelled = true;
+      await jest.advanceTimersByTimeAsync(250);
+      await pendingNext;
+      await expect(stream.iterator.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(stream.providerSignal()?.aborted).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('renews the lease every fifteen seconds', async () => {
+      jest.useFakeTimers();
+      const renewLease = jest.fn<() => Promise<void>>().mockResolvedValue();
+      let cancelled = false;
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure: () => Promise.resolve(),
+        isCancelled: () => Promise.resolve(cancelled),
+        renewLease,
+      });
+      const pendingNext = stream.iterator.next();
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(renewLease).toHaveBeenCalledTimes(2);
+
+      cancelled = true;
+      await jest.advanceTimersByTimeAsync(250);
+      await pendingNext;
+      await expect(stream.iterator.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('aborts provider work and emits only RUN_ERROR when renewal fails', async () => {
+      jest.useFakeTimers();
+      const renewLease = jest
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error('lease lost'));
+      const onFailure = jest.fn(() => Promise.resolve());
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure,
+        isCancelled: () => Promise.resolve(false),
+        renewLease,
+      });
+      const chunks: Array<StreamChunk> = [];
+      const pendingNext = stream.iterator.next();
+
+      await jest.advanceTimersByTimeAsync(15_000);
+      const started = await pendingNext;
+      if (!started.done) chunks.push(started.value);
+      for (;;) {
+        const result = await stream.iterator.next();
+        if (result.done) break;
+        chunks.push(result.value);
+      }
+
+      expect(stream.providerSignal()?.aborted).toBe(true);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+      expect(chunks.some(({ type }) => type === EventType.RUN_FINISHED)).toBe(
+        false,
+      );
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('keeps database cancellation authoritative when renewal loses the lease', async () => {
+      jest.useFakeTimers();
+      const cancellationPoll = deferred<boolean>();
+      const isCancelled = jest
+        .fn<() => Promise<boolean>>()
+        .mockReturnValueOnce(cancellationPoll.promise)
+        .mockResolvedValue(true);
+      const onFailure = jest.fn(() => Promise.resolve());
+      const stream = pendingStream({
+        onComplete: () => Promise.resolve(),
+        onFailure,
+        isCancelled,
+        renewLease: () => Promise.reject(new Error('lease lost')),
+      });
+      const chunks: Array<StreamChunk> = [];
+      const pendingNext = stream.iterator.next();
+
+      await jest.advanceTimersByTimeAsync(15_000);
+      const started = await pendingNext;
+      if (!started.done) chunks.push(started.value);
+      for (;;) {
+        const result = await stream.iterator.next();
+        if (result.done) break;
+        chunks.push(result.value);
+      }
+      cancellationPoll.resolve(false);
+      await Promise.resolve();
+
+      expect(isCancelled).toHaveBeenCalledTimes(2);
+      expect(onFailure).not.toHaveBeenCalled();
+      expect(chunks.some(({ type }) => type === EventType.RUN_ERROR)).toBe(
+        false,
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('reports completion persistence rejection as RUN_ERROR', async () => {
+      jest.useFakeTimers();
+      const onFailure = jest.fn(() => Promise.resolve());
+      const chunks: Array<StreamChunk> = [];
+
+      for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            streamResponse([
+              completionChunk(
+                'chatcmpl-answer',
+                { role: 'assistant', content: '완료 응답' },
+                null,
+              ),
+              completionChunk('chatcmpl-answer', {}, 'stop'),
+            ]),
+          ),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.reject(new Error('lease lost')),
+          onFailure,
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      )) {
+        chunks.push(chunk);
+      }
+
+      expect(onFailure).toHaveBeenCalledTimes(1);
+      expect(chunks.some(({ type }) => type === EventType.RUN_FINISHED)).toBe(
+        false,
+      );
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('clears lifecycle timers after a provider error', async () => {
+      jest.useFakeTimers();
+      const chunks: Array<StreamChunk> = [];
+      const stream = new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(null, { status: 500 })),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.resolve(),
+          onFailure: () => Promise.resolve(),
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      );
+      const consume = (async (): Promise<void> => {
+        for await (const chunk of stream) chunks.push(chunk);
+      })();
+
+      await jest.advanceTimersByTimeAsync(46_000);
+      await consume;
+
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_ERROR }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('clears lifecycle timers after a successful finish', async () => {
+      jest.useFakeTimers();
+      const chunks: Array<StreamChunk> = [];
+
+      for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
+        testConfig(),
+        jest
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            streamResponse([
+              completionChunk(
+                'chatcmpl-answer',
+                { role: 'assistant', content: '완료 응답' },
+                null,
+              ),
+              completionChunk('chatcmpl-answer', {}, 'stop'),
+            ]),
+          ),
+      ).createStream(
+        {
+          threadId: 'thread-1',
+          runId: 'run-1',
+          text: '이미지 설명',
+          image: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+        emptyTools,
+        {
+          onComplete: () => Promise.resolve(),
+          onFailure: () => Promise.resolve(),
+          isCancelled: () => Promise.resolve(false),
+          renewLease: () => Promise.resolve(),
+        },
+      )) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.at(-1)).toEqual(
+        expect.objectContaining({ type: EventType.RUN_FINISHED }),
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 });

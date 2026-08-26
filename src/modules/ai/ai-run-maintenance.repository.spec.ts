@@ -76,16 +76,26 @@ describe('AiRunMaintenanceRepository', () => {
 
     await repository.cleanupRuntimeState(new Date('2026-08-27T00:00:00.000Z'));
 
-    const queries = execute.mock.calls.map(
-      ([statement]) =>
-        new PgDialect().sqlToQuery(
-          statement as Parameters<PgDialect['sqlToQuery']>[0],
-        ).sql,
+    const queries = execute.mock.calls.map(([statement]) =>
+      new PgDialect().sqlToQuery(
+        statement as Parameters<PgDialect['sqlToQuery']>[0],
+      ),
     );
-    expect(queries[1]).toContain('FROM ai_run_events');
-    expect(queries[1]).toContain('LIMIT $2');
-    expect(queries[2]).toContain('FROM rate_limits');
-    expect(queries[2]).toContain('blocked_until IS NULL');
-    expect(queries[2]).toContain('LIMIT $3');
+    expect(queries[1]?.sql).toContain('FROM ai_run_events');
+    expect(queries[1]?.sql).toContain('ORDER BY expires_at');
+    expect(queries[1]?.sql).toContain('LIMIT $2');
+    expect(queries[1]?.params).toEqual([
+      new Date('2026-08-27T00:00:00.000Z'),
+      500,
+    ]);
+    expect(queries[2]?.sql).toContain('FROM rate_limits');
+    expect(queries[2]?.sql).toContain('blocked_until IS NULL');
+    expect(queries[2]?.sql).toContain('ORDER BY window_expires_at');
+    expect(queries[2]?.sql).toContain('LIMIT $3');
+    expect(queries[2]?.params).toEqual([
+      new Date('2026-08-27T00:00:00.000Z'),
+      new Date('2026-08-27T00:00:00.000Z'),
+      500,
+    ]);
   });
 });

@@ -25,10 +25,12 @@ const emptyStream = async function* (): AsyncIterable<StreamChunk> {
 
 type ServiceFixture = Readonly<{
   createSession: (providerIds: ReadonlyArray<AiProviderId>) => AiToolSession;
-  pendingProviderIds: (
-    accountId: string,
-    conversationId: string,
-  ) => Promise<ReadonlyArray<AiProviderId>>;
+  pendingProviderIds: jest.MockedFunction<
+    (
+      accountId: string,
+      conversationId: string,
+    ) => Promise<ReadonlyArray<AiProviderId>>
+  >;
   conversationHistory: jest.MockedFunction<
     (
       accountId: string,
@@ -47,11 +49,14 @@ type ServiceFixture = Readonly<{
     ) => AsyncIterable<StreamChunk>
   >;
   completeRun: jest.MockedFunction<(input: CompleteRunInput) => Promise<void>>;
+  failRun: jest.MockedFunction<(runId: string) => Promise<void>>;
+  failRunAndClose: jest.MockedFunction<(runId: string) => Promise<void>>;
   getProducts: jest.MockedFunction<
     (
       ids: ReadonlyArray<string>,
     ) => Promise<ReadonlyArray<CatalogProduct | null>>
   >;
+  renewRunLease: jest.MockedFunction<(runId: string) => Promise<void>>;
   service: AiService;
 }>;
 
@@ -84,6 +89,12 @@ const createService = (): ServiceFixture => {
     .mockResolvedValue();
   const completeRun = jest
     .fn<(input: CompleteRunInput) => Promise<void>>()
+    .mockResolvedValue();
+  const failRun = jest
+    .fn<(runId: string) => Promise<void>>()
+    .mockResolvedValue();
+  const failRunAndClose = jest
+    .fn<(runId: string) => Promise<void>>()
     .mockResolvedValue();
   const pendingProviderIds = jest
     .fn<
@@ -126,6 +137,8 @@ const createService = (): ServiceFixture => {
     beginRun,
     renewRunLease,
     completeRun,
+    failRun,
+    failRunAndClose,
     pendingProviderIds,
     conversationHistory,
     replaceDefaultTitle,
@@ -158,9 +171,12 @@ const createService = (): ServiceFixture => {
     generateTitle,
     createStream,
     completeRun,
+    failRun,
+    failRunAndClose,
     getProducts,
     pendingProviderIds,
     replaceDefaultTitle,
+    renewRunLease,
   };
 };
 
@@ -184,6 +200,20 @@ const catalogProduct: CatalogProduct = {
 };
 
 describe('AiService provider filters', () => {
+  it('closes a pre-producer failure without renewing the initial lease', async () => {
+    const fixture = createService();
+    const request = requestFor();
+    fixture.pendingProviderIds.mockRejectedValue(new Error('filters failed'));
+
+    await expect(
+      fixture.service.start(request.accountId, request.body),
+    ).rejects.toThrow('filters failed');
+
+    expect(fixture.renewRunLease).not.toHaveBeenCalled();
+    expect(fixture.failRun).not.toHaveBeenCalled();
+    expect(fixture.failRunAndClose).toHaveBeenCalledTimes(1);
+  });
+
   it('uses an explicit empty filter instead of a pending clarification filter', async () => {
     const { service, createSession, pendingProviderIds } = createService();
     const request = requestFor([]);

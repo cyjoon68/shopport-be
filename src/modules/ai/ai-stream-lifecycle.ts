@@ -109,9 +109,13 @@ export const createLifecycleMiddleware = (
     renewalPending = true;
     void lifecycle
       .renewLease()
-      .catch(() => {
+      .catch(async () => {
+        if (stopped || abortController.signal.aborted) return;
+        const cancelled = await lifecycle.isCancelled().catch(() => false);
         if (!stopped && !abortController.signal.aborted) {
-          abortController.abort(leaseRenewalFailedReason);
+          abortController.abort(
+            cancelled ? RUN_CANCEL_REASON : leaseRenewalFailedReason,
+          );
         }
       })
       .finally(() => {

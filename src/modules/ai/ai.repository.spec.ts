@@ -127,6 +127,31 @@ describe('AiRepository', () => {
     );
   });
 
+  it('closes a pre-producer failure in one terminal update', async () => {
+    const where = jest.fn(() => Promise.resolve());
+    const set = jest.fn<(value: unknown) => { where: typeof where }>(() => ({
+      where,
+    }));
+    const update = jest.fn(() => ({ set }));
+    const repository = new AiRepository({ update } as unknown as Database);
+
+    await repository.failRunAndClose('run-1');
+
+    const persisted = set.mock.calls.at(0)?.at(0) as
+      | {
+          status?: string;
+          completedAt?: Date;
+          streamClosedAt?: Date;
+        }
+      | undefined;
+    expect(persisted).toEqual({
+      status: 'failed',
+      completedAt: expect.any(Date),
+      streamClosedAt: expect.any(Date),
+    });
+    expect(persisted?.completedAt).toBe(persisted?.streamClosedAt);
+  });
+
   it('stores supplied snapshots after completing the reserved run', async () => {
     const returning = jest
       .fn<() => Promise<Array<{ id: string }>>>()
