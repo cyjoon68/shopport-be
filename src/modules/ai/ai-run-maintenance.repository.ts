@@ -73,6 +73,7 @@ export class AiRunMaintenanceRepository {
             AND (blocked_until IS NULL OR blocked_until <= ${now})
           ORDER BY window_expires_at
           LIMIT ${cleanupBatchSize}
+          FOR UPDATE SKIP LOCKED
         )
         DELETE FROM rate_limits
         USING expired

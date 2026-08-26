@@ -926,7 +926,6 @@ describe('Shopport API vertical flow', () => {
     const eventRunId = uuidv7();
     const now = new Date();
     const expired = new Date(now.getTime() - 60_000);
-    const blocker = await pool.connect();
     await pool.query(
       `insert into ai_runs
        (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
@@ -951,6 +950,7 @@ describe('Shopport API vertical flow', () => {
        values ('ai-maintenance-lock', 1, $1, null)`,
       [expired],
     );
+    const blocker = await pool.connect();
     try {
       await blocker.query('begin');
       await blocker.query(
@@ -984,6 +984,48 @@ describe('Shopport API vertical flow', () => {
     } finally {
       await blocker.query('rollback');
       blocker.release();
+    }
+  }, 30_000);
+
+  it('AI maintenance skips a rate limit refreshed under a row lock', async () => {
+    const key = 'ai-maintenance-refresh';
+    const now = new Date();
+    const expired = new Date(now.getTime() - 60_000);
+    const refreshed = new Date(now.getTime() + 60_000);
+    await pool.query(
+      `insert into rate_limits (key, hits, window_expires_at, blocked_until)
+       values ($1, 1, $2, null)`,
+      [key, expired],
+    );
+    const refresher = await pool.connect();
+    try {
+      await refresher.query('begin');
+      await refresher.query(
+        `update rate_limits
+         set hits = 2, window_expires_at = $2, updated_at = $2
+         where key = $1`,
+        [key, refreshed],
+      );
+
+      await expect(staleRunRecovery.recover()).resolves.toBe(0);
+
+      await refresher.query('commit');
+      await expect(
+        pool.query<{
+          hits: number;
+          window_expires_at: Date;
+        }>(
+          `select hits, window_expires_at
+           from rate_limits
+           where key = $1`,
+          [key],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ hits: 2, window_expires_at: refreshed }],
+      });
+    } finally {
+      await refresher.query('rollback');
+      refresher.release();
     }
   }, 30_000);
 
