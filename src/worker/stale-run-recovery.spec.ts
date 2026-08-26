@@ -22,10 +22,8 @@ describe('StaleRunRecovery', () => {
 
   it('does not include request catalog dependencies in the worker module', () => {
     const imports =
-      (Reflect.getMetadata(
-        MODULE_METADATA.IMPORTS,
-        WorkerModule,
-      ) as unknown as ReadonlyArray<unknown> | undefined) ?? [];
+      (Reflect.getMetadata(MODULE_METADATA.IMPORTS, WorkerModule) as unknown as
+        ReadonlyArray<unknown> | undefined) ?? [];
     const providers =
       (Reflect.getMetadata(
         MODULE_METADATA.PROVIDERS,
