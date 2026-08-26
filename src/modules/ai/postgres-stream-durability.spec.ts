@@ -109,7 +109,7 @@ describe('PostgresStreamDurability', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('ends a legacy Redis offset without querying PostgreSQL', async () => {
+  it('ends a legacy stream offset without querying PostgreSQL', async () => {
     const query = jest.fn();
     const durability = new PostgresStreamDurability(
       { query } as unknown as Pool,

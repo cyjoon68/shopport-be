@@ -5,7 +5,6 @@ import { AiRepository } from '../modules/ai/ai.repository.js';
 import { AiRunMaintenanceRepository } from '../modules/ai/ai-run-maintenance.repository.js';
 import { CatalogModule } from '../modules/catalog/catalog.module.js';
 import { StaleRunRecovery } from './stale-run-recovery.js';
-import { WorkerModule } from './worker.module.js';
 
 describe('StaleRunRecovery', () => {
   it('runs recovery and runtime cleanup together', async () => {
@@ -20,18 +19,28 @@ describe('StaleRunRecovery', () => {
     expect(repository.cleanupRuntimeState).toHaveBeenCalledTimes(1);
   });
 
-  it('does not include request catalog dependencies in the worker module', () => {
-    const imports =
-      (Reflect.getMetadata(MODULE_METADATA.IMPORTS, WorkerModule) as unknown as
-        ReadonlyArray<unknown> | undefined) ?? [];
-    const providers =
-      (Reflect.getMetadata(
-        MODULE_METADATA.PROVIDERS,
-        WorkerModule,
-      ) as unknown as ReadonlyArray<unknown> | undefined) ?? [];
+  it('does not include request catalog dependencies in the worker module', async () => {
+    const providerApiKey = process.env.PROVIDER_API_KEY;
+    process.env.PROVIDER_API_KEY = 'test-provider-key';
+    try {
+      const { WorkerModule } = await import('./worker.module.js');
+      const imports =
+        (Reflect.getMetadata(
+          MODULE_METADATA.IMPORTS,
+          WorkerModule,
+        ) as unknown as ReadonlyArray<unknown> | undefined) ?? [];
+      const providers =
+        (Reflect.getMetadata(
+          MODULE_METADATA.PROVIDERS,
+          WorkerModule,
+        ) as unknown as ReadonlyArray<unknown> | undefined) ?? [];
 
-    expect(imports).not.toContain(CatalogModule);
-    expect(providers).toContain(AiRunMaintenanceRepository);
-    expect(providers).not.toContain(AiRepository);
+      expect(imports).not.toContain(CatalogModule);
+      expect(providers).toContain(AiRunMaintenanceRepository);
+      expect(providers).not.toContain(AiRepository);
+    } finally {
+      if (providerApiKey === undefined) delete process.env.PROVIDER_API_KEY;
+      else process.env.PROVIDER_API_KEY = providerApiKey;
+    }
   });
 });
