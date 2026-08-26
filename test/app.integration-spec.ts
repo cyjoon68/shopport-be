@@ -370,6 +370,40 @@ describe('Shopport API vertical flow', () => {
     });
   });
 
+  it('rejects a malformed access token without exposing JWT errors', async () => {
+    const httpResponse = await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', 'Bearer not-a-jwt')
+      .send({})
+      .expect(401);
+    expect(
+      z.object({ message: z.string() }).parse(httpResponse.body).message,
+    ).toBe('Invalid access token');
+
+    const response = await request(baseUrl)
+      .post('/graphql')
+      .set('authorization', 'Bearer not-a-jwt')
+      .send({ query: '{ viewer { id } }' })
+      .expect(200);
+
+    const graphqlResponse = z
+      .object({
+        errors: z.array(
+          z.object({
+            message: z.string(),
+            extensions: z.object({ code: z.string() }),
+          }),
+        ),
+      })
+      .parse(response.body);
+    const graphqlError = graphqlResponse.errors.at(0);
+    expect(graphqlError).toBeDefined();
+    if (!graphqlError) throw new Error('Expected GraphQL authentication error');
+    expect(graphqlError.message).toBe('Invalid access token');
+    expect(graphqlError.extensions.code).toBe('UNAUTHENTICATED');
+    expect(response.text).not.toContain('jwt malformed');
+  });
+
   it('logs in, chats, replays, saves a product, and reads history', async () => {
     const loginResponse = await request(baseUrl)
       .post('/v1/auth/kakao')
