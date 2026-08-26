@@ -11,7 +11,7 @@ const config = {
   ],
   coverageDirectory: 'coverage',
   coverageThreshold: {
-    global: { statements: 58, branches: 49, functions: 50, lines: 60 },
+    global: { statements: 65, branches: 54, functions: 57, lines: 67 },
   },
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
