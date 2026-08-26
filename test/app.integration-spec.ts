@@ -12,7 +12,7 @@ import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
 import { decodePageCursor } from '../src/common/cursor.js';
-import { DATABASE, DATABASE_POOL } from '../src/database/database.module.js';
+import { DATABASE_POOL } from '../src/database/database.module.js';
 import type { AiStreamAdapter } from '../src/modules/ai/ai-stream.adapter.js';
 import { AI_STREAM_ADAPTER } from '../src/modules/ai/ai-stream.adapter.js';
 import type { AiToolSession } from '../src/modules/ai/ai-tools.js';

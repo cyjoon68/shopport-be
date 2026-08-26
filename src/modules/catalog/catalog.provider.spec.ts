@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 
-import { fetchCatalogJson } from './catalog-http.js';
 import { CatalogProvider } from './catalog.provider.js';
+import { fetchCatalogJson } from './catalog-http.js';
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {

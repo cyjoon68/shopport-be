@@ -1,7 +1,6 @@
 import { jest } from '@jest/globals';
 import type {
   AbortInfo,
-  ChatMiddlewareConfig,
   ChatMiddlewareContext,
   ErrorInfo,
   FinishInfo,
@@ -10,10 +9,6 @@ import type {
 import { EventType } from '@tanstack/ai';
 
 import {
-  type DeepModeState,
-  type ProductRecommendationState,
-} from './ai-provider-protocol.js';
-import {
   completionChunk,
   deferred,
   emptyTools,
@@ -21,22 +16,19 @@ import {
   streamResponse,
   testConfig,
 } from '../../../test/openai-compatible-ai.adapter-test-support.js';
-import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
+import {
+  type DeepModeState,
+  type ProductRecommendationState,
+} from './ai-provider-protocol.js';
 import {
   createLifecycleMiddleware,
   createPublicStream,
   createTerminalState,
 } from './ai-stream-lifecycle.js';
+import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
 import type { AiStreamLifecycle } from './types.js';
 
 const context = {} as ChatMiddlewareContext;
-
-const config = (): ChatMiddlewareConfig => ({
-  messages: [],
-  systemPrompts: [],
-  tools: [],
-  modelOptions: { tool_choice: 'stale' },
-});
 
 const lifecycle = (
   overrides: Partial<AiStreamLifecycle> = {},

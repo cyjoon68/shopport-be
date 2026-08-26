@@ -2,8 +2,6 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
 import { EventType, type StreamChunk } from '@tanstack/ai';
 
-import type { Environment } from '../../config/environment.js';
-import type { AiToolSession } from './ai-tools.js';
 import {
   ambiguityAssessmentResponse,
   completionChunk,
@@ -11,6 +9,8 @@ import {
   requiredCall,
   streamResponse,
 } from '../../../test/openai-compatible-ai.adapter-test-support.js';
+import type { Environment } from '../../config/environment.js';
+import type { AiToolSession } from './ai-tools.js';
 import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
 import type { AiStreamResult } from './types.js';
 

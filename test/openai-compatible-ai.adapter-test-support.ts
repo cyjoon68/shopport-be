@@ -3,10 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import type { StreamChunk } from '@tanstack/ai';
 
 import type { Environment } from '../src/config/environment.js';
-import type { CatalogProduct } from '../src/modules/catalog/types.js';
 import type { AiToolSession } from '../src/modules/ai/ai-tools.js';
 import { OpenAiCompatibleAiStreamAdapter } from '../src/modules/ai/openai-compatible-ai.adapter.js';
 import type { AiStreamLifecycle } from '../src/modules/ai/types.js';
+import type { CatalogProduct } from '../src/modules/catalog/types.js';
 
 export const product: CatalogProduct = {
   id: '0198a122-0c00-7000-8000-000000000001',

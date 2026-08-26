@@ -34,7 +34,7 @@ describe('AuthRepository refresh replay handling', () => {
         },
       ]);
     const transaction = {
-      execute: jest.fn(() => Promise.resolve()),
+      execute: jest.fn<(query: SQL) => Promise<void>>(() => Promise.resolve()),
       select: jest
         .fn()
         .mockReturnValueOnce({
@@ -76,9 +76,9 @@ describe('AuthRepository refresh replay handling', () => {
 
     expect(transaction.update).not.toHaveBeenCalled();
     expect(transaction.execute).toHaveBeenCalledTimes(2);
-    const lock = transaction.execute.mock.calls.at(0)?.at(0);
+    const [lock] = transaction.execute.mock.calls[0] ?? [];
     if (!lock) throw new Error('Expected account session lock');
-    const query = new PgDialect().sqlToQuery(lock as SQL);
+    const query = new PgDialect().sqlToQuery(lock);
     expect(query.sql).toContain('pg_advisory_xact_lock(hashtextextended');
     expect(query.params).toEqual([accountId]);
   });

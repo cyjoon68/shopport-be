@@ -79,6 +79,7 @@ export const createLifecycleMiddleware = (
   let pollPending = false;
   let renewalPending = false;
   let stopped = false;
+  const isActive = (): boolean => !stopped && !abortController.signal.aborted;
   const stop = (): void => {
     stopped = true;
     if (cancellationInterval) clearInterval(cancellationInterval);
@@ -112,7 +113,7 @@ export const createLifecycleMiddleware = (
       .catch(async () => {
         if (stopped || abortController.signal.aborted) return;
         const cancelled = await lifecycle.isCancelled().catch(() => false);
-        if (!stopped && !abortController.signal.aborted) {
+        if (isActive()) {
           abortController.abort(
             cancelled ? RUN_CANCEL_REASON : leaseRenewalFailedReason,
           );

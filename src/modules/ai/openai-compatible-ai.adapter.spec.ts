@@ -3,9 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import type { StreamChunk } from '@tanstack/ai';
 import { EventType } from '@tanstack/ai';
 
-import type { Environment } from '../../config/environment.js';
-import type { CatalogProduct } from '../catalog/types.js';
-import type { AiToolSession } from './ai-tools.js';
 import {
   ambiguityAssessmentResponse,
   completionChunk,
@@ -16,6 +13,8 @@ import {
   requiredCall,
   streamResponse,
 } from '../../../test/openai-compatible-ai.adapter-test-support.js';
+import type { Environment } from '../../config/environment.js';
+import type { AiToolSession } from './ai-tools.js';
 import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
 import type { AiStreamResult } from './types.js';
 
