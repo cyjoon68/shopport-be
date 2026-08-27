@@ -6,6 +6,7 @@ test-results
 .env.*
 !.env.example
 .DS_Store
+.superpowers/
 *.log
 *.tsbuildinfo
 .terraform
