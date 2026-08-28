@@ -22,6 +22,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
     "start": "node --env-file-if-exists=.env dist/src/main.js",
+    "start:maestro": "nest start --path tsconfig.json --sourceRoot . --entryFile test/maestro-server",
     "start:outbox-worker": "node --env-file-if-exists=.env dist/src/outbox-worker.js",
     "start:worker": "node --env-file-if-exists=.env dist/src/worker.js",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config jest.config.mjs",
