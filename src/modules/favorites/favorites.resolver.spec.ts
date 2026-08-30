@@ -27,6 +27,7 @@ const product = (id: string): CatalogProduct => ({
   ratingConfidence: 1,
   relevanceBucket: 3,
   store: null,
+  availability: 'IN_STOCK',
   title: id,
   totalAmountMinor: '1000',
 });

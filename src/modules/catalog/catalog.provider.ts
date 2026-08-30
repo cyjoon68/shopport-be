@@ -34,7 +34,12 @@ export class CatalogProvider implements CatalogProviderContract {
     const page = decodePageCursor(input.after ?? null);
     const query = input.query.trim();
     if (query.length === 0) {
-      return { items: [], endCursor: null, hasNextPage: false };
+      return {
+        items: [],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      };
     }
     const size = Math.min(Math.max(input.first, 1), 20);
     const fetchSize = input.budgetMax === undefined ? size : 20;
@@ -68,9 +73,26 @@ export class CatalogProvider implements CatalogProviderContract {
           ...(await Promise.all(
             selected
               .slice(index, index + inventoryConcurrency)
-              .map((product) =>
-                withDaisoInventory(this.#fetchImpl, product, location),
-              ),
+              .map(async (product) => {
+                try {
+                  return await withDaisoInventory(
+                    this.#fetchImpl,
+                    product,
+                    location,
+                  );
+                } catch {
+                  return {
+                    ...product,
+                    availability: 'UNKNOWN' as const,
+                    inStock: false,
+                    inventory: {
+                      status: 'unconfirmed' as const,
+                      quantity: null,
+                      location,
+                    },
+                  };
+                }
+              }),
           )),
         );
       }
@@ -80,6 +102,7 @@ export class CatalogProvider implements CatalogProviderContract {
       items,
       endCursor: encodePageCursor(page + 1),
       hasNextPage: products.length === fetchSize || withinBudget.length > size,
+      unavailableProviderIds: [],
     };
   };
 }

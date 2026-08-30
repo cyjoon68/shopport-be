@@ -12,6 +12,7 @@ import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 
 import { DATABASE_POOL } from '../src/database/database.module.js';
+import { AiRepository } from '../src/modules/ai/ai.repository.js';
 import { AI_STREAM_ADAPTER } from '../src/modules/ai/ai-stream.adapter.js';
 import { ArchiveReader } from '../src/modules/archive/archive.reader.js';
 import { ArchiveWriter } from '../src/modules/archive/archive.writer.js';
@@ -164,6 +165,7 @@ describe('Shopport API vertical flow', () => {
   let archiveWriter: ArchiveWriter;
   let assetResultConsumer: AssetResultConsumer;
   let archiveReader: ArchiveReader;
+  let aiRepository: AiRepository;
   let outboxProcessor: OutboxProcessor;
   let outboxWakeup: OutboxWakeup;
   let retentionCleanup: RetentionCleanup;
@@ -314,6 +316,7 @@ describe('Shopport API vertical flow', () => {
       .useValue(createMaestroAiStream())
       .compile();
     app = module.createNestApplication();
+    aiRepository = module.get(AiRepository);
     appInitialized = true;
     await app.listen(0, '127.0.0.1');
     baseUrl = await app.getUrl();
@@ -597,6 +600,45 @@ describe('Shopport API vertical flow', () => {
       expect.objectContaining({ id: assistantMessageId, role: 'ASSISTANT' }),
     ]);
 
+    const recoveryRunId = uuidv7();
+    const recoveryResponse = await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({
+        threadId: conversationId,
+        runId: recoveryRunId,
+        messages: [{ id: userMessageId, role: 'user', content: '텀블러' }],
+        forwardedProps: {},
+      })
+      .expect(200);
+    expect(recoveryResponse.text).toContain('RUN_FINISHED');
+    const recoveryRows = await pool.query<{
+      assistant_count: number;
+      user_count: number;
+      user_part_count: number;
+    }>(
+      `select count(m.id) filter (where m.id = $1)::int as user_count,
+              count(m.id) filter (where m.run_id = $2 and m.role = 'assistant')::int as assistant_count,
+              (select count(*)::int from message_parts where message_id = $1) as user_part_count
+       from messages m
+       where m.id = $1 or m.run_id = $2`,
+      [userMessageId, recoveryRunId],
+    );
+    expect(recoveryRows.rows).toEqual([
+      { assistant_count: 1, user_count: 1, user_part_count: 1 },
+    ]);
+
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({
+        threadId: conversationId,
+        runId: completedRunId,
+        messages: [{ id: userMessageId, role: 'user', content: '텀블러' }],
+        forwardedProps: {},
+      })
+      .expect(409);
+
     await request(baseUrl)
       .post('/v1/ai/chat')
       .set('authorization', `Bearer ${accessToken}`)
@@ -689,27 +731,36 @@ describe('Shopport API vertical flow', () => {
     const accountId = account.rows.at(0)?.account_id;
     if (!accountId) throw new Error('Expected Kakao account');
     const reservedRunId = uuidv7();
+    const failedRunId = uuidv7();
     const now = new Date();
     await pool.query(
       `insert into ai_runs
-       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
-       values ($1, $2, $3, 'reserved', $4, $5, $4)`,
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at,
+        completed_at, stream_closed_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $4, null, null),
+              ($6, $2, $3, 'failed', $4, $4, $4, $4, $4)`,
       [
         reservedRunId,
         accountId,
         conversationId,
         now,
         new Date(now.getTime() + 60_000),
+        failedRunId,
       ],
     );
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await request(baseUrl)
-        .post('/v1/ai/chat/cancel')
-        .set('authorization', `Bearer ${accessToken}`)
-        .send({ threadId: conversationId, runId: reservedRunId })
-        .expect(204);
-    }
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({ threadId: conversationId, runId: reservedRunId })
+      .expect(200)
+      .expect({ outcome: 'cancelled' });
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({ threadId: conversationId, runId: reservedRunId })
+      .expect(200)
+      .expect({ outcome: 'already_cancelled' });
     const cancelled = await pool.query<{
       status: string;
       assistant_count: number;
@@ -732,7 +783,14 @@ describe('Shopport API vertical flow', () => {
       .post('/v1/ai/chat/cancel')
       .set('authorization', `Bearer ${accessToken}`)
       .send({ threadId: conversationId, runId: completedRunId })
-      .expect(204);
+      .expect(200)
+      .expect({ outcome: 'completed' });
+    await request(baseUrl)
+      .post('/v1/ai/chat/cancel')
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({ threadId: conversationId, runId: failedRunId })
+      .expect(200)
+      .expect({ outcome: 'failed' });
 
     const refreshResponses = await Promise.all([
       request(baseUrl)
@@ -761,6 +819,7 @@ describe('Shopport API vertical flow', () => {
   }, 30_000);
 
   registerAiRuntimeScenarios(() => ({
+    aiRepository,
     baseUrl,
     createAiOwner,
     pool,

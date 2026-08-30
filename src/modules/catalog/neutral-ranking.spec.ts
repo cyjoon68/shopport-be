@@ -14,6 +14,7 @@ const product = (
   affiliate: false,
   relevanceBucket: 1,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '10000',
   deliveryEstimateDays: 2,
   ratingConfidence: 0.8,

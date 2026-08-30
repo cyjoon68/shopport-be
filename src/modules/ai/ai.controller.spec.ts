@@ -78,3 +78,33 @@ describe('AiController replay offsets', () => {
     },
   );
 });
+
+describe('AiController cancellation', () => {
+  it('returns the cancellation outcome', async () => {
+    const { request } = fixture('unused');
+    const cancel = jest
+      .fn<
+        (
+          accountId: string,
+          conversationId: string,
+          runId: string,
+        ) => Promise<'completed'>
+      >()
+      .mockResolvedValue('completed');
+    const controller = new AiController(
+      { cancel } as unknown as AiService,
+      {} as Pool,
+    );
+    const accountId = request.user?.sub;
+    if (accountId === undefined) throw new Error('Expected authenticated user');
+    const threadId = uuidv7();
+    const runId = uuidv7();
+
+    await expect(
+      controller.cancel(request, { threadId, runId }),
+    ).resolves.toEqual({
+      outcome: 'completed',
+    });
+    expect(cancel).toHaveBeenCalledWith(accountId, threadId, runId);
+  });
+});

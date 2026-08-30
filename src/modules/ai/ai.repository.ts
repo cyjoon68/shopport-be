@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import type { Database } from '../../database/database.module.js';
@@ -38,7 +38,8 @@ type NewMessagePart = {
   payload: unknown;
 };
 
-type CancelRunResult = 'cancelled' | 'already_cancelled' | 'terminal';
+export type CancelRunResult =
+  'cancelled' | 'already_cancelled' | 'completed' | 'failed';
 
 const runLeaseMilliseconds = 60_000;
 
@@ -63,14 +64,6 @@ export class AiRepository {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${input.userMessageId}))`,
       );
-      const existingMessages = await transaction
-        .select({ id: messages.id })
-        .from(messages)
-        .where(eq(messages.id, input.userMessageId))
-        .limit(1);
-      if (existingMessages.length > 0) {
-        throw new ConflictException('Message already exists');
-      }
       const inserted = await transaction
         .insert(aiRuns)
         .values({
@@ -85,6 +78,67 @@ export class AiRepository {
         .onConflictDoNothing()
         .returning({ id: aiRuns.id });
       if (inserted.length === 0) return false;
+      const existingMessages = await transaction
+        .select({
+          accountId: conversations.accountId,
+          conversationId: messages.conversationId,
+          deletedAt: conversations.deletedAt,
+          role: messages.role,
+          status: messages.status,
+        })
+        .from(messages)
+        .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+        .where(eq(messages.id, input.userMessageId))
+        .limit(1);
+      if (existingMessages.length > 0) {
+        const existing = existingMessages[0];
+        if (!existing) throw new ConflictException('Message already exists');
+        if (
+          existing.accountId !== input.accountId ||
+          existing.conversationId !== input.conversationId ||
+          existing.deletedAt !== null ||
+          existing.role !== 'user' ||
+          existing.status !== 'completed'
+        ) {
+          throw new ConflictException('Message already exists');
+        }
+        const storedParts = await transaction
+          .select({ kind: messageParts.kind, payload: messageParts.payload })
+          .from(messageParts)
+          .where(eq(messageParts.messageId, input.userMessageId))
+          .orderBy(asc(messageParts.position));
+        const expectedParts = [
+          ...(input.text.length > 0
+            ? [{ kind: 'text' as const, value: input.text }]
+            : []),
+          ...(input.assetId
+            ? [{ kind: 'image' as const, value: input.assetId }]
+            : []),
+        ];
+        const matches =
+          storedParts.length === expectedParts.length &&
+          storedParts.every(({ kind, payload }, index) => {
+            const expected = expectedParts[index];
+            if (!expected) return false;
+            if (
+              kind !== expected.kind ||
+              typeof payload !== 'object' ||
+              payload === null ||
+              Array.isArray(payload)
+            ) {
+              return false;
+            }
+            const stored = payload as Record<string, unknown>;
+            return (
+              Object.keys(stored).length === 1 &&
+              (kind === 'text'
+                ? stored.text === expected.value
+                : stored.id === expected.value)
+            );
+          });
+        if (!matches) throw new ConflictException('Message already exists');
+        return true;
+      }
 
       const ownedConversations = await transaction
         .select({ id: conversations.id })
@@ -415,9 +469,9 @@ export class AiRepository {
         )
         .limit(1);
       if (owned.length === 0) throw new NotFoundException('Run not found');
-      return owned.at(0)?.status === 'cancelled'
-        ? 'already_cancelled'
-        : 'terminal';
+      const status = owned.at(0)?.status;
+      if (status === 'cancelled') return 'already_cancelled';
+      return status === 'completed' ? 'completed' : 'failed';
     });
 
   public renewRunLease = async (

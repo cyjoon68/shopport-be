@@ -1,5 +1,7 @@
 type CatalogCapability = 'LIVE_QUERY' | 'LICENSED_FEED';
 
+export type StockAvailability = 'IN_STOCK' | 'OUT_OF_STOCK' | 'UNKNOWN';
+
 export type CatalogProduct = Readonly<{
   id: string;
   providerId: string;
@@ -9,6 +11,7 @@ export type CatalogProduct = Readonly<{
   affiliate: boolean;
   relevanceBucket: number;
   inStock: boolean;
+  availability: StockAvailability;
   totalAmountMinor: string;
   deliveryEstimateDays: number | null;
   ratingConfidence: number;
@@ -46,6 +49,7 @@ export type CatalogSearchResult = Readonly<{
   items: ReadonlyArray<CatalogProduct>;
   endCursor: string | null;
   hasNextPage: boolean;
+  unavailableProviderIds: ReadonlyArray<string>;
 }>;
 
 export type CatalogProvider = Readonly<{

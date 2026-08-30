@@ -15,6 +15,7 @@ const product: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 3,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '1000',
   deliveryEstimateDays: null,
   ratingConfidence: 1,
@@ -183,7 +184,54 @@ describe('mapMessages', () => {
     expect(messages[0]?.parts).toEqual([
       expect.objectContaining({
         __typename: 'ProductReferenceMessagePart',
-        product: expect.objectContaining({ id: product.id }),
+        product: expect.objectContaining({
+          id: product.id,
+          offer: expect.objectContaining({ availability: 'IN_STOCK' }),
+        }),
+      }),
+    ]);
+  });
+
+  it('marks a legacy stored product snapshot availability as unknown', async () => {
+    const snapshot = toProductGraphql(product);
+    const legacyOffer = { ...snapshot.offer };
+    Reflect.deleteProperty(legacyOffer, 'availability');
+    const messages = await mapMessages(
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000011',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          role: 'assistant',
+          status: 'completed',
+          createdAt: new Date('2026-08-14T00:00:00Z'),
+        },
+      ],
+      [
+        {
+          id: '0198a122-0c00-7000-8000-000000000012',
+          messageId: '0198a122-0c00-7000-8000-000000000011',
+          kind: 'product_reference',
+          position: 0,
+          payload: {
+            productId: product.id,
+            productSnapshot: {
+              ...snapshot,
+              offer: {
+                ...legacyOffer,
+                observedAt: legacyOffer.observedAt.toISOString(),
+              },
+            },
+          },
+        },
+      ],
+      {} as CatalogService,
+    );
+
+    expect(messages[0]?.parts).toEqual([
+      expect.objectContaining({
+        product: expect.objectContaining({
+          offer: expect.objectContaining({ availability: 'UNKNOWN' }),
+        }),
       }),
     ]);
   });

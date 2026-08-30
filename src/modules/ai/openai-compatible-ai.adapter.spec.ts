@@ -14,7 +14,7 @@ import {
   streamResponse,
 } from '../../../test/openai-compatible-ai.adapter-test-support.js';
 import type { Environment } from '../../config/environment.js';
-import type { AiToolSession } from './ai-tools.js';
+import { AiTools, type AiToolSession } from './ai-tools.js';
 import { OpenAiCompatibleAiStreamAdapter } from './openai-compatible-ai.adapter.js';
 import type { AiStreamResult } from './types.js';
 
@@ -78,7 +78,12 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     });
     const tools: AiToolSession = {
       searchProducts: () =>
-        Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+        Promise.resolve({
+          items: [],
+          endCursor: null,
+          hasNextPage: false,
+          unavailableProviderIds: [],
+        }),
       getProduct: () => Promise.resolve(null),
     };
     for await (const _chunk of new OpenAiCompatibleAiStreamAdapter(
@@ -205,6 +210,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
         items: [product],
         endCursor: null,
         hasNextPage: false,
+        unavailableProviderIds: ['oliveyoung'],
       }),
     );
     const tools: AiToolSession = {
@@ -251,10 +257,19 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     expect(firstBody).toContain('askUser');
     const recommendationsBody = JSON.parse(
       await requestBody(requiredCall(providerFetch.mock.calls, 1)),
-    ) as { tool_choice?: unknown };
+    ) as {
+      messages?: Array<Readonly<{ content?: string; role: string }>>;
+      tool_choice?: unknown;
+    };
     expect(recommendationsBody.tool_choice).toEqual({
       type: 'function',
       function: { name: 'recordProductRecommendations' },
+    });
+    const toolMessage = recommendationsBody.messages?.find(
+      ({ role }) => role === 'tool',
+    );
+    expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
+      unavailableProviderIds: ['oliveyoung'],
     });
     expect(searchProducts).toHaveBeenCalledWith({
       query: '텀블러',
@@ -420,6 +435,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
             items: [product],
             endCursor: null,
             hasNextPage: false,
+            unavailableProviderIds: [],
           }),
         getProduct: () => Promise.resolve(null),
       },
@@ -562,6 +578,7 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
             items: [product, secondProduct],
             endCursor: null,
             hasNextPage: false,
+            unavailableProviderIds: [],
           }),
         getProduct: () => Promise.resolve(null),
       },
@@ -596,6 +613,90 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     );
   });
 
+  it('does not re-query exhausted providers across adapter tool iterations', async () => {
+    const searchResponse = (index: number): Response =>
+      streamResponse([
+        completionChunk(
+          `chatcmpl-search-${index.toString()}`,
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: `call-search-${index.toString()}`,
+                type: 'function',
+                function: {
+                  name: 'searchProducts',
+                  arguments: JSON.stringify({ query: '텀블러' }),
+                },
+              },
+            ],
+          },
+          null,
+        ),
+        completionChunk(
+          `chatcmpl-search-${index.toString()}`,
+          {},
+          'tool_calls',
+        ),
+      ]);
+    const providerFetch = jest.fn<typeof fetch>().mockResolvedValueOnce(
+      ambiguityAssessmentResponse('chatcmpl-assessment', {
+        requestKind: 'shopping',
+        goalClarity: 1,
+        constraintClarity: 1,
+        successCriteriaClarity: 1,
+        nextDimension: null,
+      }),
+    );
+    Array.from({ length: 5 }, (_value, index) => index).forEach((index) => {
+      providerFetch.mockResolvedValueOnce(searchResponse(index));
+    });
+    const attempts = { daiso: 0, oliveyoung: 0 };
+    const tools = new AiTools({
+      search: (_query, _first, _after, filters): Promise<never> => {
+        const providerId = filters?.providerId ?? 'daiso';
+        attempts[providerId] += 1;
+        return Promise.reject(new Error('upstream token=secret unavailable'));
+      },
+      getProduct: (): Promise<null> => Promise.resolve(null),
+    }).createSession(['oliveyoung', 'daiso']);
+    const onFailure = jest.fn(() => Promise.resolve());
+    const chunks: Array<StreamChunk> = [];
+
+    for await (const chunk of new OpenAiCompatibleAiStreamAdapter(
+      new ConfigService<Environment, true>({
+        PROVIDER_API_KEY: 'test-provider-key',
+        PROVIDER_MODEL: 'gpt-5.4-mini',
+        PROVIDER_MAX_OUTPUT_TOKENS: 512,
+      }),
+      providerFetch,
+    ).createStream(
+      {
+        threadId: '0198a122-0c00-7000-8000-000000000010',
+        runId: '0198a122-0c00-7000-8000-000000000011',
+        text: '텀블러를 찾아줘',
+        image: null,
+      },
+      tools,
+      {
+        onComplete: () => Promise.resolve(),
+        onFailure,
+        isCancelled: () => Promise.resolve(false),
+        renewLease: () => Promise.resolve(),
+      },
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(providerFetch).toHaveBeenCalledTimes(5);
+    expect(attempts).toEqual({ daiso: 2, oliveyoung: 2 });
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(chunks.at(-1)).toEqual(
+      expect.objectContaining({ type: EventType.RUN_ERROR }),
+    );
+  });
+
   it('sanitizes provider failures and releases the reserved run', async () => {
     const providerFetch = jest.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -616,7 +717,12 @@ describe('OpenAiCompatibleAiStreamAdapter', () => {
     });
     const tools: AiToolSession = {
       searchProducts: () =>
-        Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+        Promise.resolve({
+          items: [],
+          endCursor: null,
+          hasNextPage: false,
+          unavailableProviderIds: [],
+        }),
       getProduct: () => Promise.resolve(null),
     };
     const onFailure = jest.fn(() => Promise.resolve());

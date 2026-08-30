@@ -16,6 +16,7 @@ const product = (
   affiliate: false,
   relevanceBucket: 1,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor,
   deliveryEstimateDays: 1,
   ratingConfidence: 1,
@@ -34,6 +35,7 @@ describe('AI read-only tools', () => {
           items: [product('one')],
           endCursor: null,
           hasNextPage: false,
+          unavailableProviderIds: [],
         }),
       getProduct: (id: string): Promise<CatalogProduct> =>
         Promise.resolve(product(id)),
@@ -62,6 +64,7 @@ describe('AI read-only tools', () => {
           items: [product('oliveyoung-1', filters.providerId)],
           endCursor: null,
           hasNextPage: false,
+          unavailableProviderIds: [],
         }),
     );
     const getProduct = jest.fn((): Promise<CatalogProduct> =>
@@ -103,6 +106,7 @@ describe('AI read-only tools', () => {
           ),
           endCursor: null,
           hasNextPage: false,
+          unavailableProviderIds: [],
         });
       },
     );
@@ -123,25 +127,97 @@ describe('AI read-only tools', () => {
     expect(result.items).toHaveLength(10);
   });
 
-  it('does not substitute another retailer when a selected search fails', async () => {
-    const search = jest.fn(
-      (
-        _query: string,
-        _first: number,
-        _after: string | null,
-        filters: { providerId?: 'daiso' | 'oliveyoung' } = {},
-      ): Promise<CatalogSearchResult> =>
-        filters.providerId === 'oliveyoung'
-          ? Promise.reject(new Error('oliveyoung unavailable'))
-          : Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
-    );
+  it('returns successful selected-provider products after one failed provider retry', async () => {
+    let daisoAttempts = 0;
+    let oliveYoungAttempts = 0;
+    const search = (
+      _query: string,
+      _first: number,
+      _after: string | null,
+      filters: { providerId?: 'daiso' | 'oliveyoung' } = {},
+    ): Promise<CatalogSearchResult> => {
+      if (filters.providerId === 'oliveyoung') {
+        oliveYoungAttempts += 1;
+        return Promise.reject(new Error('oliveyoung token=secret unavailable'));
+      }
+      daisoAttempts += 1;
+      return Promise.resolve({
+        items: [product('daiso-1', 'daiso')],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      });
+    };
     const session = new AiTools({
       search,
+      getProduct: (id): Promise<CatalogProduct | null> =>
+        Promise.resolve(product(id, 'daiso')),
+    }).createSession(['oliveyoung', 'daiso']);
+
+    const result = await session.searchProducts({ query: '립밤' });
+
+    expect(oliveYoungAttempts).toBe(2);
+    expect(daisoAttempts).toBe(1);
+    expect(result).toMatchObject({
+      items: [expect.objectContaining({ id: 'daiso-1' })],
+      unavailableProviderIds: ['oliveyoung'],
+    });
+    await expect(session.getProduct('daiso-1')).resolves.toMatchObject({
+      id: 'daiso-1',
+    });
+    await expect(session.getProduct('oliveyoung-1')).resolves.toBeNull();
+
+    const nextResult = await session.searchProducts({ query: '보습 립밤' });
+
+    expect(oliveYoungAttempts).toBe(2);
+    expect(daisoAttempts).toBe(2);
+    expect(nextResult.unavailableProviderIds).toEqual(['oliveyoung']);
+  });
+
+  it('retries each selected provider once before reporting every provider unavailable', async () => {
+    const attempts = { daiso: 0, oliveyoung: 0 };
+    const session = new AiTools({
+      search: (
+        _query,
+        _first,
+        _after,
+        filters,
+      ): Promise<CatalogSearchResult> => {
+        const providerId = filters?.providerId ?? 'daiso';
+        attempts[providerId] += 1;
+        return Promise.reject(new Error('upstream token=secret unavailable'));
+      },
       getProduct: (): Promise<CatalogProduct | null> => Promise.resolve(null),
     }).createSession(['oliveyoung', 'daiso']);
 
     await expect(session.searchProducts({ query: '립밤' })).rejects.toThrow(
-      'oliveyoung unavailable',
+      'Selected providers are unavailable',
     );
+    await expect(
+      session.searchProducts({ query: '보습 립밤' }),
+    ).rejects.toThrow('Selected providers are unavailable');
+    expect(attempts).toEqual({ daiso: 2, oliveyoung: 2 });
+  });
+
+  it('does not call another provider when a single forced provider fails', async () => {
+    const attempts = { daiso: 0, oliveyoung: 0 };
+    const session = new AiTools({
+      search: (
+        _query,
+        _first,
+        _after,
+        filters,
+      ): Promise<CatalogSearchResult> => {
+        const providerId = filters?.providerId ?? 'daiso';
+        attempts[providerId] += 1;
+        return Promise.reject(new Error('upstream token=secret unavailable'));
+      },
+      getProduct: (): Promise<CatalogProduct | null> => Promise.resolve(null),
+    }).createSession(['oliveyoung']);
+
+    await expect(session.searchProducts({ query: '립밤' })).rejects.toThrow(
+      'Selected providers are unavailable',
+    );
+    expect(attempts).toEqual({ daiso: 0, oliveyoung: 2 });
   });
 });
