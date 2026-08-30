@@ -284,7 +284,7 @@ export class OpenAiCompatibleAiStreamAdapter implements AiStreamAdapter {
           recommendationState.productIds.add(id),
         );
         deepModeState.searchedProducts = true;
-        return toAiProductResult(result.items);
+        return toAiProductResult(result.items, result.unavailableProviderIds);
       },
     ),
     getProductDefinition.server(async ({ id }) => {

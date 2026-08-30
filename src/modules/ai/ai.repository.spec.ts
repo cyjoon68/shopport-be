@@ -15,6 +15,7 @@ const product: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 3,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '1000',
   deliveryEstimateDays: null,
   ratingConfidence: 1,
@@ -38,11 +39,15 @@ describe('AiRepository', () => {
       .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000014' }]);
     const query = (
       limit: typeof existingMessageLimit,
-    ): Readonly<{ from: ReturnType<typeof jest.fn> }> => ({
-      from: jest.fn(() => ({
-        where: jest.fn(() => ({ limit })),
-      })),
-    });
+    ): Readonly<{ from: ReturnType<typeof jest.fn> }> => {
+      const where = jest.fn(() => ({ limit }));
+      return {
+        from: jest.fn(() => ({
+          innerJoin: jest.fn(() => ({ where })),
+          where,
+        })),
+      };
+    };
     const runReturning = jest
       .fn<() => Promise<Array<{ id: string }>>>()
       .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000011' }]);
@@ -96,6 +101,9 @@ describe('AiRepository', () => {
       .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000010' }]);
     const existingMessageQuery = {
       from: jest.fn(() => ({
+        innerJoin: jest.fn(() => ({
+          where: jest.fn(() => ({ limit: existingMessageLimit })),
+        })),
         where: jest.fn(() => ({ limit: existingMessageLimit })),
       })),
     };
@@ -149,6 +157,83 @@ describe('AiRepository', () => {
         userMessageId: '0198a122-0c00-7000-8000-000000000013',
       }),
     ).resolves.toBe(true);
+  });
+
+  it('starts a new run for an identical completed user message without inserting it again', async () => {
+    const existingMessageLimit = jest
+      .fn<
+        () => Promise<
+          Array<{
+            accountId: string;
+            conversationId: string;
+            deletedAt: Date | null;
+            role: string;
+            status: string;
+          }>
+        >
+      >()
+      .mockResolvedValue([
+        {
+          accountId: '0198a122-0c00-7000-8000-000000000012',
+          conversationId: '0198a122-0c00-7000-8000-000000000010',
+          deletedAt: null,
+          role: 'user',
+          status: 'completed',
+        },
+      ]);
+    const existingMessageWhere = jest.fn(() => ({
+      limit: existingMessageLimit,
+    }));
+    const existingMessageQuery = {
+      from: jest.fn(() => ({
+        innerJoin: jest.fn(() => ({ where: existingMessageWhere })),
+        where: existingMessageWhere,
+      })),
+    };
+    const existingParts = jest
+      .fn<() => Promise<Array<{ kind: string; payload: unknown }>>>()
+      .mockResolvedValue([{ kind: 'text', payload: { text: '재시도 요청' } }]);
+    const existingPartsQuery = {
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({ orderBy: existingParts })),
+      })),
+    };
+    const runReturning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([{ id: '0198a122-0c00-7000-8000-000000000011' }]);
+    const runConflict = jest.fn(() => ({ returning: runReturning }));
+    const runValues = jest.fn(() => ({ onConflictDoNothing: runConflict }));
+    const insert = jest.fn((table: unknown) => {
+      if (table === aiRuns) return { values: runValues };
+      throw new Error('Existing user message must not be inserted');
+    });
+    const transaction = {
+      execute: jest.fn(() => Promise.resolve()),
+      insert,
+      select: jest
+        .fn()
+        .mockReturnValueOnce(existingMessageQuery)
+        .mockReturnValueOnce(existingPartsQuery),
+    };
+    const repository = new AiRepository({
+      transaction: (
+        callback: (value: typeof transaction) => Promise<boolean>,
+      ) => callback(transaction),
+    } as unknown as Database);
+
+    await expect(
+      repository.beginRun({
+        accountId: '0198a122-0c00-7000-8000-000000000012',
+        assetId: null,
+        conversationId: '0198a122-0c00-7000-8000-000000000010',
+        runId: '0198a122-0c00-7000-8000-000000000011',
+        text: '재시도 요청',
+        userMessageId: '0198a122-0c00-7000-8000-000000000013',
+      }),
+    ).resolves.toBe(true);
+    expect(insert).toHaveBeenCalledWith(aiRuns);
+    expect(insert).not.toHaveBeenCalledWith(messages);
+    expect(insert).not.toHaveBeenCalledWith(messageParts);
   });
 
   it('renews both authoritative lease timestamps', async () => {
@@ -347,6 +432,32 @@ describe('AiRepository', () => {
       streamClosedAt: expect.any(Date),
     });
     expect(persisted?.completedAt).toBe(persisted?.streamClosedAt);
+  });
+
+  it('reports a failed owned run as failed after cancellation loses', async () => {
+    const returning = jest
+      .fn<() => Promise<Array<{ id: string }>>>()
+      .mockResolvedValue([]);
+    const updateWhere = jest.fn(() => ({ returning }));
+    const updateSet = jest.fn(() => ({ where: updateWhere }));
+    const selectLimit = jest
+      .fn<() => Promise<Array<{ status: 'failed' }>>>()
+      .mockResolvedValue([{ status: 'failed' }]);
+    const selectWhere = jest.fn(() => ({ limit: selectLimit }));
+    const selectFrom = jest.fn(() => ({ where: selectWhere }));
+    const transaction = {
+      update: jest.fn(() => ({ set: updateSet })),
+      select: jest.fn(() => ({ from: selectFrom })),
+    };
+    const repository = new AiRepository({
+      transaction: (
+        callback: (value: typeof transaction) => Promise<unknown>,
+      ): Promise<unknown> => callback(transaction),
+    } as unknown as Database);
+
+    await expect(
+      repository.cancelRun('account-1', 'conversation-1', 'run-1'),
+    ).resolves.toBe('failed');
   });
 
   it('reads the provider filter only from the latest assistant clarification', async () => {

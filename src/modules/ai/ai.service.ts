@@ -4,7 +4,7 @@ import type { StreamChunk } from '@tanstack/ai';
 import { AssetsService } from '../assets/assets.service.js';
 import { toProductGraphql } from '../catalog/catalog.mapper.js';
 import { CatalogService } from '../catalog/catalog.service.js';
-import { AiRepository } from './ai.repository.js';
+import { AiRepository, type CancelRunResult } from './ai.repository.js';
 import { parseAiRequest, storageRunIdFor } from './ai-request.js';
 import type { AiStreamAdapter } from './ai-stream.adapter.js';
 import { AI_STREAM_ADAPTER } from './ai-stream.adapter.js';
@@ -133,8 +133,8 @@ export class AiService {
     accountId: string,
     conversationId: string,
     runId: string,
-  ): Promise<void> => {
+  ): Promise<CancelRunResult> => {
     const storageRunId = storageRunIdFor(runId);
-    await this.repository.cancelRun(accountId, conversationId, storageRunId);
+    return this.repository.cancelRun(accountId, conversationId, storageRunId);
   };
 }

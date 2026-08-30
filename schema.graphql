@@ -187,12 +187,19 @@ type Offer {
   total: Money!
   "Whether the offer is currently in stock."
   isInStock: Boolean!
+  availability: StockAvailability!
   "The expected delivery date when available."
   deliveryExpectedAt: DateTime
   "The last observation time."
   observedAt: DateTime!
   "A provider-domain allowlisted purchase URL."
   outboundUrl: URL!
+}
+
+enum StockAvailability {
+  IN_STOCK
+  OUT_OF_STOCK
+  UNKNOWN
 }
 
 "A monetary amount in minor units."

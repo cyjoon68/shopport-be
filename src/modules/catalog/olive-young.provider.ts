@@ -59,6 +59,17 @@ const toOliveYoungProduct = (
     : location
       ? 'unconfirmed'
       : null;
+  const availability = status
+    ? status === 'in_stock'
+      ? 'IN_STOCK'
+      : status === 'out_of_stock'
+        ? 'OUT_OF_STOCK'
+        : 'UNKNOWN'
+    : product.inStock === true
+      ? 'IN_STOCK'
+      : product.inStock === false
+        ? 'OUT_OF_STOCK'
+        : 'UNKNOWN';
   return {
     id: uuidv5(`oliveyoung:${product.goodsNumber}`, catalogIdNamespace),
     providerId: 'oliveyoung',
@@ -67,7 +78,8 @@ const toOliveYoungProduct = (
     imageUrl: product.imageUrl,
     affiliate: false,
     relevanceBucket: 2,
-    inStock: status ? status === 'in_stock' : (product.inStock ?? true),
+    inStock: availability === 'IN_STOCK',
+    availability,
     totalAmountMinor: String(product.priceToPay),
     deliveryEstimateDays: null,
     ratingConfidence: 0,

@@ -49,9 +49,11 @@ export class CatalogService {
     );
 
   private readonly validateProduct = (
-    product: CatalogProduct,
+    product: Omit<CatalogProduct, 'availability'> &
+      Readonly<{ availability?: CatalogProduct['availability'] }>,
   ): CatalogProduct => ({
     ...product,
+    availability: product.availability ?? 'UNKNOWN',
     outboundUrl: this.validateOutboundUrl(product.outboundUrl),
   });
 

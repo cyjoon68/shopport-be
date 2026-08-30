@@ -83,7 +83,12 @@ describe('OpenAI-compatible Deep Mode', () => {
         ]),
       );
     const searchProducts = jest.fn<AiToolSession['searchProducts']>(() =>
-      Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+      Promise.resolve({
+        items: [],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      }),
     );
     const completed: Array<AiStreamResult> = [];
     const chunks: Array<StreamChunk> = [];
@@ -198,7 +203,12 @@ describe('OpenAI-compatible Deep Mode', () => {
       },
       {
         searchProducts: () =>
-          Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+          Promise.resolve({
+            items: [],
+            endCursor: null,
+            hasNextPage: false,
+            unavailableProviderIds: [],
+          }),
         getProduct: () => Promise.resolve(null),
       },
       {
@@ -247,7 +257,12 @@ describe('OpenAI-compatible Deep Mode', () => {
         ]),
       );
     const searchProducts = jest.fn(() =>
-      Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+      Promise.resolve({
+        items: [],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      }),
     );
     const completed: Array<AiStreamResult> = [];
 
@@ -332,7 +347,12 @@ describe('OpenAI-compatible Deep Mode', () => {
         ]),
       );
     const searchProducts = jest.fn(() =>
-      Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+      Promise.resolve({
+        items: [],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      }),
     );
     const completed: Array<AiStreamResult> = [];
 
@@ -420,7 +440,12 @@ describe('OpenAI-compatible Deep Mode', () => {
         ]),
       );
     const searchProducts = jest.fn<AiToolSession['searchProducts']>(() =>
-      Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+      Promise.resolve({
+        items: [],
+        endCursor: null,
+        hasNextPage: false,
+        unavailableProviderIds: [],
+      }),
     );
     const completed: Array<AiStreamResult> = [];
 

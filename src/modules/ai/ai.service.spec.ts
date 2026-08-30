@@ -49,6 +49,13 @@ type ServiceFixture = Readonly<{
     ) => AsyncIterable<StreamChunk>
   >;
   completeRun: jest.MockedFunction<(input: CompleteRunInput) => Promise<void>>;
+  cancelRun: jest.MockedFunction<
+    (
+      accountId: string,
+      conversationId: string,
+      runId: string,
+    ) => Promise<'completed'>
+  >;
   failRun: jest.MockedFunction<(runId: string) => Promise<void>>;
   failRunAndClose: jest.MockedFunction<(runId: string) => Promise<void>>;
   getProducts: jest.MockedFunction<
@@ -121,6 +128,15 @@ const createService = (): ServiceFixture => {
       ) => Promise<void>
     >()
     .mockResolvedValue();
+  const cancelRun = jest
+    .fn<
+      (
+        accountId: string,
+        conversationId: string,
+        runId: string,
+      ) => Promise<'completed'>
+    >()
+    .mockResolvedValue('completed');
   const createSession = jest
     .fn<(providerIds: ReadonlyArray<AiProviderId>) => AiToolSession>()
     .mockReturnValue({} as AiToolSession);
@@ -137,6 +153,7 @@ const createService = (): ServiceFixture => {
     beginRun,
     renewRunLease,
     completeRun,
+    cancelRun,
     failRun,
     failRunAndClose,
     pendingProviderIds,
@@ -171,6 +188,7 @@ const createService = (): ServiceFixture => {
     generateTitle,
     createStream,
     completeRun,
+    cancelRun,
     failRun,
     failRunAndClose,
     getProducts,
@@ -189,6 +207,7 @@ const catalogProduct: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 3,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '1000',
   deliveryEstimateDays: null,
   ratingConfidence: 1,
@@ -198,6 +217,24 @@ const catalogProduct: CatalogProduct = {
   inventory: null,
   evidence: [],
 };
+
+describe('AiService cancellation', () => {
+  it('returns the repository cancellation outcome', async () => {
+    const fixture = createService();
+    const accountId = uuidv7();
+    const conversationId = uuidv7();
+    const runId = uuidv7();
+
+    await expect(
+      fixture.service.cancel(accountId, conversationId, runId),
+    ).resolves.toBe('completed');
+    expect(fixture.cancelRun).toHaveBeenCalledWith(
+      accountId,
+      conversationId,
+      runId,
+    );
+  });
+});
 
 describe('AiService provider filters', () => {
   it('closes a pre-producer failure without renewing the initial lease', async () => {

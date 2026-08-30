@@ -114,6 +114,38 @@ const retailerProvider = (): Readonly<{
 };
 
 describe('CatalogProvider Daiso', () => {
+  it('marks a product without soldOut data as unknown', async () => {
+    const provider = new CatalogProvider();
+    provider.useFetch(() =>
+      Promise.resolve(
+        jsonResponse({
+          success: true,
+          data: {
+            products: [
+              {
+                id: 'unknown-sold-out',
+                imageUrl: 'https://cdn.daisomall.co.kr/unknown.jpg',
+                name: '판매 상태 미확인 상품',
+                price: 1000,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const result = await provider.search({
+      after: null,
+      first: 1,
+      query: '상품',
+    });
+
+    expect(result.items[0]).toMatchObject({
+      availability: 'UNKNOWN',
+      inStock: false,
+    });
+  });
+
   it('applies budget and attaches location inventory', async () => {
     const { provider } = retailerProvider();
     const daiso = await provider.search({
@@ -176,6 +208,71 @@ describe('CatalogProvider Daiso', () => {
 
     expect(maximumActive).toBeLessThanOrEqual(4);
   });
+
+  it('keeps products with failed inventory lookups as unknown', async () => {
+    const provider = new CatalogProvider();
+    provider.useFetch((input) => {
+      const url = requestUrl(input);
+      if (url.pathname === '/api/daiso/products') {
+        return Promise.resolve(
+          jsonResponse({
+            success: true,
+            data: {
+              products: [
+                {
+                  id: 'unknown-stock',
+                  imageUrl: 'https://cdn.daisomall.co.kr/unknown.jpg',
+                  name: '재고 확인 상품',
+                  price: 1000,
+                },
+                {
+                  id: 'known-stock',
+                  imageUrl: 'https://cdn.daisomall.co.kr/known.jpg',
+                  name: '재고 있음 상품',
+                  price: 2000,
+                },
+              ],
+            },
+          }),
+        );
+      }
+      if (url.searchParams.get('productId') === 'unknown-stock') {
+        return Promise.reject(new Error('inventory token=secret unavailable'));
+      }
+      return Promise.resolve(
+        jsonResponse({
+          success: true,
+          data: { storeInventory: { inStockCount: 1, stores: [] } },
+        }),
+      );
+    });
+
+    const result = await provider.search({
+      after: null,
+      first: 2,
+      location: '서울',
+      query: '상품',
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          availability: 'UNKNOWN',
+          inStock: false,
+          inventory: {
+            status: 'unconfirmed',
+            quantity: null,
+            location: '서울',
+          },
+          productCode: 'unknown-stock',
+        }),
+        expect.objectContaining({
+          availability: 'IN_STOCK',
+          productCode: 'known-stock',
+        }),
+      ]),
+    );
+  });
 });
 
 describe('CatalogProvider Olive Young', () => {
@@ -200,6 +297,39 @@ describe('CatalogProvider Olive Young', () => {
         },
       }),
     );
+  });
+
+  it('marks missing stock data as unknown instead of in stock', async () => {
+    const provider = new CatalogProvider();
+    provider.useFetch(() =>
+      Promise.resolve(
+        jsonResponse({
+          success: true,
+          data: {
+            products: [
+              {
+                goodsNumber: 'unknown-stock',
+                goodsName: '재고 미확인 립밤',
+                imageUrl: 'https://image.oliveyoung.co.kr/unknown.jpg',
+                priceToPay: 1000,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const result = await provider.search({
+      after: null,
+      first: 1,
+      providerId: 'oliveyoung',
+      query: '립밤',
+    });
+
+    expect(result.items[0]).toMatchObject({
+      availability: 'UNKNOWN',
+      inStock: false,
+    });
   });
 });
 

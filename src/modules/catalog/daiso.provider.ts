@@ -49,7 +49,13 @@ const toDaisoProduct = (
   imageUrl: product.imageUrl,
   affiliate: false,
   relevanceBucket: 2,
-  inStock: product.soldOut !== true,
+  inStock: product.soldOut === false,
+  availability:
+    product.soldOut === true
+      ? 'OUT_OF_STOCK'
+      : product.soldOut === false
+        ? 'IN_STOCK'
+        : 'UNKNOWN',
   totalAmountMinor: String(product.price),
   deliveryEstimateDays: null,
   ratingConfidence: 0,
@@ -100,6 +106,7 @@ export const withDaisoInventory = async (
   return {
     ...product,
     inStock,
+    availability: inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
     freshnessEpochMs: fetchedAt,
     store: store
       ? {

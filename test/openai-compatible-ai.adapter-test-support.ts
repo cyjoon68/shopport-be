@@ -17,6 +17,7 @@ export const product: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 3,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '21900',
   deliveryEstimateDays: 1,
   ratingConfidence: 0.96,
@@ -130,7 +131,12 @@ export const testConfig = (): ConfigService<Environment, true> =>
 
 export const emptyTools: AiToolSession = {
   searchProducts: () =>
-    Promise.resolve({ items: [], endCursor: null, hasNextPage: false }),
+    Promise.resolve({
+      items: [],
+      endCursor: null,
+      hasNextPage: false,
+      unavailableProviderIds: [],
+    }),
   getProduct: () => Promise.resolve(null),
 };
 

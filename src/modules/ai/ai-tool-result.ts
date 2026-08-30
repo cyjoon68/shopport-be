@@ -3,9 +3,11 @@ import type { CatalogProduct } from '../catalog/types.js';
 
 export const toAiProductResult = (
   products: ReadonlyArray<CatalogProduct>,
+  unavailableProviderIds: ReadonlyArray<string> = [],
 ): Readonly<{
   kind: 'product_cards';
   rankingPolicy: 'neutral-v1';
+  unavailableProviderIds: ReadonlyArray<string>;
   products: ReadonlyArray<
     ReturnType<typeof toProductGraphql> &
       Readonly<{
@@ -24,6 +26,7 @@ export const toAiProductResult = (
 }> => ({
   kind: 'product_cards' as const,
   rankingPolicy: 'neutral-v1' as const,
+  unavailableProviderIds,
   products: products.map((product) => ({
     ...toProductGraphql(product),
     providerId: product.providerId,

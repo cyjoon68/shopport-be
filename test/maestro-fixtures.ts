@@ -22,6 +22,7 @@ const maestroProduct: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 2,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '5000',
   deliveryEstimateDays: 1,
   ratingConfidence: 1,
@@ -42,6 +43,7 @@ export const maestroCatalogProvider: CatalogProvider = {
       items: [maestroProduct],
       endCursor: null,
       hasNextPage: false,
+      unavailableProviderIds: [],
     });
   },
 };

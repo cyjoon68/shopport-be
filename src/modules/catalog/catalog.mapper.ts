@@ -13,6 +13,7 @@ export type ProductGraphql = Readonly<{
     shipping: Readonly<{ amountMinor: string; currency: string }>;
     total: Readonly<{ amountMinor: string; currency: string }>;
     isInStock: boolean;
+    availability: CatalogProduct['availability'];
     deliveryExpectedAt: Date | null;
     observedAt: Date;
     outboundUrl: string;
@@ -46,6 +47,7 @@ export const toProductGraphql = (
     shipping: { amountMinor: '0', currency: 'KRW' },
     total: { amountMinor: product.totalAmountMinor, currency: 'KRW' },
     isInStock: product.inStock,
+    availability: product.availability,
     deliveryExpectedAt:
       product.deliveryEstimateDays === null
         ? null

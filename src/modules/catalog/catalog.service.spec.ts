@@ -13,6 +13,7 @@ const product: CatalogProduct = {
   affiliate: false,
   relevanceBucket: 1,
   inStock: true,
+  availability: 'IN_STOCK',
   totalAmountMinor: '1000',
   deliveryEstimateDays: 1,
   ratingConfidence: 1,
@@ -34,6 +35,7 @@ describe('CatalogService outbound policy', () => {
           items: [product],
           endCursor: null,
           hasNextPage: false,
+          unavailableProviderIds: [],
         }),
     };
     const catalog = new CatalogService(provider, {
@@ -61,6 +63,7 @@ describe('CatalogService outbound policy', () => {
           items: [],
           endCursor: null,
           hasNextPage: false,
+          unavailableProviderIds: [],
         }),
     };
     const catalog = new CatalogService(provider, {
@@ -74,5 +77,34 @@ describe('CatalogService outbound policy', () => {
       outboundUrl: 'https://shop.example/purchase',
     });
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a legacy cached product without availability', async () => {
+    const legacyProduct = {
+      ...product,
+      outboundUrl: 'https://shop.example/purchase',
+    };
+    Reflect.deleteProperty(legacyProduct, 'availability');
+    const provider: CatalogProvider = {
+      providerId: 'test',
+      capabilities: ['LIVE_QUERY'],
+      outboundHosts: ['shop.example'],
+      search: () =>
+        Promise.resolve({
+          items: [],
+          endCursor: null,
+          hasNextPage: false,
+          unavailableProviderIds: [],
+        }),
+    };
+    const catalog = new CatalogService(provider, {
+      get: () => Promise.resolve(legacyProduct),
+      getMany: () => Promise.resolve([]),
+      save: () => Promise.resolve(),
+    } as unknown as CatalogRepository);
+
+    await expect(catalog.getProduct(product.id)).resolves.toMatchObject({
+      availability: 'UNKNOWN',
+    });
   });
 });

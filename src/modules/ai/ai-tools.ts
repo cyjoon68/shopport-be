@@ -30,6 +30,7 @@ export class AiTools {
   ): AiToolSession => {
     let calls = 0;
     const authorizedProductIds = new Set<string>();
+    const exhaustedProviderIds = new Set<AiProviderId>();
     const count = (): void => {
       calls += 1;
       if (calls > 6) throw new Error('AI tool call limit exceeded');
@@ -41,32 +42,63 @@ export class AiTools {
           forcedProviderIds.length > 0
             ? forcedProviderIds
             : [input.providerId ?? 'daiso'];
-        const results = await Promise.all(
-          providerIds.map((providerId) =>
-            this.catalog.search(input.query || '추천 상품', 5, null, {
-              providerId,
-              ...(input.budgetMax === undefined
-                ? {}
-                : { budgetMax: input.budgetMax }),
-              ...(input.location === undefined
-                ? {}
-                : { location: input.location }),
-            }),
-          ),
+        const activeProviderIds = providerIds.filter(
+          (providerId) => !exhaustedProviderIds.has(providerId),
         );
+        if (activeProviderIds.length === 0)
+          throw new Error('Selected providers are unavailable');
+        const search = (
+          providerId: AiProviderId,
+        ): Promise<CatalogSearchResult> =>
+          this.catalog.search(input.query || '추천 상품', 5, null, {
+            providerId,
+            ...(input.budgetMax === undefined
+              ? {}
+              : { budgetMax: input.budgetMax }),
+            ...(input.location === undefined
+              ? {}
+              : { location: input.location }),
+          });
+        const results = await Promise.all(
+          activeProviderIds.map(async (providerId) => {
+            try {
+              return { providerId, result: await search(providerId) };
+            } catch {
+              try {
+                return { providerId, result: await search(providerId) };
+              } catch {
+                exhaustedProviderIds.add(providerId);
+                return { providerId, result: null };
+              }
+            }
+          }),
+        );
+        const successfulResults = results.flatMap(({ result }) =>
+          result ? [result] : [],
+        );
+        const unavailableProviderIds = providerIds.filter((providerId) =>
+          exhaustedProviderIds.has(providerId),
+        );
+        if (successfulResults.length === 0)
+          throw new Error('Selected providers are unavailable');
+        const [firstResult] = successfulResults;
         if (forcedProviderIds.length > 0) {
-          results.forEach(({ items }) => {
+          successfulResults.forEach(({ items }) => {
             items.forEach(({ id }) => authorizedProductIds.add(id));
           });
         }
-        if (results.length === 1) return results[0] as CatalogSearchResult;
+        if (successfulResults.length === 1 && firstResult)
+          return {
+            ...firstResult,
+            unavailableProviderIds,
+          };
         return {
-          items: rankProducts(results.flatMap(({ items }) => items)).slice(
-            0,
-            10,
-          ),
+          items: rankProducts(
+            successfulResults.flatMap(({ items }) => items),
+          ).slice(0, 10),
           endCursor: null,
-          hasNextPage: results.some(({ hasNextPage }) => hasNextPage),
+          hasNextPage: successfulResults.some(({ hasNextPage }) => hasNextPage),
+          unavailableProviderIds,
         };
       },
       getProduct: async (id): Promise<CatalogProduct | null> => {

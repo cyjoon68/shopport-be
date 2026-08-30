@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import request from 'supertest';
 import { v7 as uuidv7 } from 'uuid';
 
+import type { AiRepository } from '../src/modules/ai/ai.repository.js';
 import type { StaleRunRecovery } from '../src/worker/stale-run-recovery.js';
 
 type AiOwner = Readonly<{
@@ -12,11 +13,45 @@ type AiOwner = Readonly<{
 }>;
 
 type AiRuntimeFixture = Readonly<{
+  aiRepository: AiRepository;
   baseUrl: string;
   createAiOwner: () => Promise<AiOwner>;
   pool: Pool;
   staleRunRecovery: StaleRunRecovery;
 }>;
+
+const waitForBlockedRunUpdates = async (
+  pool: Pool,
+  blockerPid: number,
+  count: number,
+): Promise<void> => {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const blocked = await pool.query<{ count: number }>(
+      `with recursive blocked(pid) as (
+         select pid
+         from pg_stat_activity
+         where $1::int = any(pg_blocking_pids(pid))
+         union
+         select activity.pid
+         from pg_stat_activity activity
+         join blocked on blocked.pid = any(pg_blocking_pids(activity.pid))
+       )
+       select count(*)::int as count
+       from blocked
+       join pg_stat_activity using (pid)
+       where datname = current_database()
+         and wait_event_type = 'Lock'
+         and query ilike '%update "ai_runs"%'`,
+      [blockerPid],
+    );
+    if ((blocked.rows.at(0)?.count ?? 0) >= count) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${count.toString()} blocked AI run updates`,
+  );
+};
 
 export const registerAiRuntimeScenarios = (
   getFixture: () => AiRuntimeFixture,
@@ -126,7 +161,8 @@ export const registerAiRuntimeScenarios = (
       .post('/v1/ai/chat/cancel')
       .set('authorization', `Bearer ${owner.accessToken}`)
       .send({ threadId: owner.conversationId, runId })
-      .expect(204);
+      .expect(200)
+      .expect({ outcome: 'cancelled' });
     const replay = await request(baseUrl)
       .get(`/v1/ai/chat?runId=${runId}&offset=0`)
       .set('authorization', `Bearer ${owner.accessToken}`)
@@ -146,6 +182,183 @@ export const registerAiRuntimeScenarios = (
     expect(cancelled.rows.at(0)?.status).toBe('cancelled');
     expect(cancelled.rows.at(0)?.completed_at).toBeInstanceOf(Date);
     expect(cancelled.rows.at(0)?.stream_closed_at).toBeInstanceOf(Date);
+  }, 30_000);
+
+  it('keeps concurrent cancellation and completion mutually exclusive', async () => {
+    const { aiRepository, baseUrl, createAiOwner, pool } = getFixture();
+    const owner = await createAiOwner();
+    const runId = uuidv7();
+    const now = new Date();
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $4)`,
+      [
+        runId,
+        owner.accountId,
+        owner.conversationId,
+        now,
+        new Date(now.getTime() + 60_000),
+      ],
+    );
+    const blocker = await pool.connect();
+    let cancellation: Promise<unknown> | undefined;
+    let completion: Promise<void> | undefined;
+    let orchestrationError: Error | undefined;
+    try {
+      await blocker.query('begin');
+      const blockerBackend = await blocker.query<{ pid: number }>(
+        'select pg_backend_pid()::int as pid',
+      );
+      const blockerPid = blockerBackend.rows.at(0)?.pid;
+      if (blockerPid === undefined)
+        throw new Error('Expected blocker backend PID');
+      await blocker.query('select id from ai_runs where id = $1 for update', [
+        runId,
+      ]);
+      cancellation = Promise.resolve(
+        request(baseUrl)
+          .post('/v1/ai/chat/cancel')
+          .set('authorization', `Bearer ${owner.accessToken}`)
+          .send({ threadId: owner.conversationId, runId })
+          .expect(200),
+      );
+      await waitForBlockedRunUpdates(pool, blockerPid, 1);
+      completion = aiRepository.completeRun({
+        runId,
+        conversationId: owner.conversationId,
+        messageId: uuidv7(),
+        text: '경쟁 조건 응답',
+        productRecommendations: [],
+        askUser: null,
+        providerIds: [],
+      });
+      await waitForBlockedRunUpdates(pool, blockerPid, 2);
+      await blocker.query('commit');
+    } catch (error) {
+      orchestrationError =
+        error instanceof Error ? error : new Error(String(error));
+    } finally {
+      await blocker.query('rollback');
+      blocker.release();
+    }
+
+    const [cancellationResult, completionResult] = await Promise.allSettled([
+      cancellation ?? Promise.reject(new Error('Cancellation did not start')),
+      completion ?? Promise.reject(new Error('Completion did not start')),
+    ]);
+    if (orchestrationError instanceof Error) throw orchestrationError;
+    expect(cancellationResult).toMatchObject({
+      status: 'fulfilled',
+      value: { body: { outcome: 'cancelled' } },
+    });
+    expect(completionResult).toEqual({
+      status: 'rejected',
+      reason: expect.objectContaining({ message: 'AI run lease lost' }),
+    });
+    const terminalRun = await pool.query<{
+      status: string;
+      assistant_count: number;
+    }>(
+      `select r.status,
+              count(m.id) filter (where m.role = 'assistant')::int as assistant_count
+       from ai_runs r
+       left join messages m on m.run_id = r.id
+       where r.id = $1
+       group by r.status`,
+      [runId],
+    );
+
+    expect(terminalRun.rows).toEqual([
+      { status: 'cancelled', assistant_count: 0 },
+    ]);
+  }, 30_000);
+
+  it('reports completed cancellation when completion wins the row lock race', async () => {
+    const { aiRepository, baseUrl, createAiOwner, pool } = getFixture();
+    const owner = await createAiOwner();
+    const runId = uuidv7();
+    const now = new Date();
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, status, started_at, deadline_at, heartbeat_at)
+       values ($1, $2, $3, 'reserved', $4, $5, $4)`,
+      [
+        runId,
+        owner.accountId,
+        owner.conversationId,
+        now,
+        new Date(now.getTime() + 60_000),
+      ],
+    );
+    const blocker = await pool.connect();
+    let cancellation: Promise<unknown> | undefined;
+    let completion: Promise<void> | undefined;
+    let orchestrationError: Error | undefined;
+    try {
+      await blocker.query('begin');
+      const blockerBackend = await blocker.query<{ pid: number }>(
+        'select pg_backend_pid()::int as pid',
+      );
+      const blockerPid = blockerBackend.rows.at(0)?.pid;
+      if (blockerPid === undefined)
+        throw new Error('Expected blocker backend PID');
+      await blocker.query('select id from ai_runs where id = $1 for update', [
+        runId,
+      ]);
+      completion = aiRepository.completeRun({
+        runId,
+        conversationId: owner.conversationId,
+        messageId: uuidv7(),
+        text: '완료 우선 응답',
+        productRecommendations: [],
+        askUser: null,
+        providerIds: [],
+      });
+      await waitForBlockedRunUpdates(pool, blockerPid, 1);
+      cancellation = Promise.resolve(
+        request(baseUrl)
+          .post('/v1/ai/chat/cancel')
+          .set('authorization', `Bearer ${owner.accessToken}`)
+          .send({ threadId: owner.conversationId, runId })
+          .expect(200),
+      );
+      await waitForBlockedRunUpdates(pool, blockerPid, 2);
+      await blocker.query('commit');
+    } catch (error) {
+      orchestrationError =
+        error instanceof Error ? error : new Error(String(error));
+    } finally {
+      await blocker.query('rollback');
+      blocker.release();
+    }
+
+    const [completionResult, cancellationResult] = await Promise.allSettled([
+      completion ?? Promise.reject(new Error('Completion did not start')),
+      cancellation ?? Promise.reject(new Error('Cancellation did not start')),
+    ]);
+    if (orchestrationError instanceof Error) throw orchestrationError;
+    expect(completionResult.status).toBe('fulfilled');
+    expect(cancellationResult).toMatchObject({
+      status: 'fulfilled',
+      value: { body: { outcome: 'completed' } },
+    });
+    const terminalRun = await pool.query<{
+      status: string;
+      assistant_count: number;
+    }>(
+      `select r.status,
+              count(m.id) filter (where m.role = 'assistant')::int as assistant_count
+       from ai_runs r
+       left join messages m on m.run_id = r.id
+       where r.id = $1
+       group by r.status`,
+      [runId],
+    );
+
+    expect(terminalRun.rows).toEqual([
+      { status: 'completed', assistant_count: 1 },
+    ]);
   }, 30_000);
 
   it('recovers stale reserved runs once', async () => {

@@ -15,6 +15,22 @@ const moneyPayload = z.object({
   amountMinor: z.string(),
   currency: z.string(),
 });
+const productOfferPayload = z
+  .object({
+    id: z.uuid(),
+    price: moneyPayload,
+    shipping: moneyPayload,
+    total: moneyPayload,
+    isInStock: z.boolean(),
+    availability: z.enum(['IN_STOCK', 'OUT_OF_STOCK', 'UNKNOWN']).optional(),
+    deliveryExpectedAt: z.coerce.date().nullable(),
+    observedAt: z.coerce.date(),
+    outboundUrl: z.url(),
+  })
+  .transform((offer) => ({
+    ...offer,
+    availability: offer.availability ?? 'UNKNOWN',
+  }));
 const productSnapshotPayload = z.object({
   id: z.uuid(),
   provider: z.object({ providerId: z.string(), displayName: z.string() }),
@@ -22,16 +38,7 @@ const productSnapshotPayload = z.object({
   imageUrl: z.url(),
   isAffiliate: z.boolean(),
   isSaved: z.boolean(),
-  offer: z.object({
-    id: z.uuid(),
-    price: moneyPayload,
-    shipping: moneyPayload,
-    total: moneyPayload,
-    isInStock: z.boolean(),
-    deliveryExpectedAt: z.coerce.date().nullable(),
-    observedAt: z.coerce.date(),
-    outboundUrl: z.url(),
-  }),
+  offer: productOfferPayload,
 });
 const productPayload = z
   .object({

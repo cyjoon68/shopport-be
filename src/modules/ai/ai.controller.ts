@@ -20,6 +20,7 @@ import { z } from 'zod';
 
 import { DATABASE_POOL } from '../../database/database.module.js';
 import { type AuthenticatedRequest, viewerIdFrom } from '../auth/auth.guard.js';
+import type { CancelRunResult } from './ai.repository.js';
 import { AiService } from './ai.service.js';
 import {
   AiRequestValidationError,
@@ -152,18 +153,19 @@ export class AiController {
   }
 
   @Post('cancel')
-  @HttpCode(204)
+  @HttpCode(200)
   public async cancel(
     @Req() request: AuthenticatedRequest,
     @Body() body: unknown,
-  ): Promise<void> {
+  ): Promise<Readonly<{ outcome: CancelRunResult }>> {
     const parsed = cancelSchema.safeParse(body);
     if (!parsed.success)
       throw new BadRequestException('Invalid cancel request');
-    await this.ai.cancel(
+    const outcome = await this.ai.cancel(
       viewerIdFrom(request),
       parsed.data.threadId,
       parsed.data.runId,
     );
+    return { outcome };
   }
 }
