@@ -35,16 +35,6 @@ pnpm dev:outbox-worker
 | Worker                 | 비동기 job, outbox, 검색 색인, 보존 처리           |
 | Image processor Lambda | S3 asset을 정규화하고 결과를 queue로 전달          |
 
-## API와 데이터 계약
-
-schema.graphql은 모바일의 canonical API contract입니다. production schema는 additive 변경 후 deprecation을 거쳐 제거합니다. threadId는 conversation ID이고 runId는 idempotency key이며, PostgreSQL stream event는 1시간 보관합니다.
-
-## Provider와 보안 경계
-
-상품 검색은 승인된 catalog API 또는 licensed feed만 사용합니다. crawling, HTML parsing, 비공식 endpoint, client에 provider secret을 넣는 방식은 금지합니다. 승인된 adapter가 없으면 fail-closed합니다.
-
-AI는 Command Code Provider API의 OpenAI Chat Completions 호환 endpoint만 사용하고 x-cmd-zdr: 1을 강제합니다. ZDR-capable upstream이 없으면 비보존 경로로 fallback하지 않고 실패합니다. production에서는 PROVIDER_API_KEY가 필요하며, 기본 모델은 vision-capable gpt-5.4-mini입니다.
-
 ## 검사
 
 ```bash
