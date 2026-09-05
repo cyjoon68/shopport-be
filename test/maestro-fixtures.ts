@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 
 import { decodePageCursor } from '../src/common/cursor.js';
 import type { AiStreamAdapter } from '../src/modules/ai/ai-stream.adapter.js';
+import { toAiProductResult } from '../src/modules/ai/ai-tool-result.js';
 import type { AiToolSession } from '../src/modules/ai/ai-tools.js';
 import type {
   AiStreamInput,
@@ -33,6 +34,15 @@ const maestroProduct: CatalogProduct = {
   evidence: [{ operation: 'products', fetchedAt: Date.UTC(2026, 7, 24) }],
 };
 
+const maestroProducts = [95, 96, 97, 98, 99].map(
+  (suffix, index): CatalogProduct => ({
+    ...maestroProduct,
+    id: `0198a122-0c00-7000-8000-${String(suffix).padStart(12, '0')}`,
+    productCode: `integration-tumbler-${String(suffix)}`,
+    title: `통합 테스트 텀블러 ${String(index + 1)}`,
+  }),
+);
+
 export const maestroCatalogProvider: CatalogProvider = {
   providerId: 'integration',
   capabilities: ['LIVE_QUERY'],
@@ -40,7 +50,7 @@ export const maestroCatalogProvider: CatalogProvider = {
   search: ({ after }) => {
     decodePageCursor(after ?? null);
     return Promise.resolve({
-      items: [maestroProduct],
+      items: maestroProducts,
       endCursor: null,
       hasNextPage: false,
       unavailableProviderIds: [],
@@ -79,20 +89,23 @@ const createMaestroStream = async function* (
     providerId: 'daiso',
   });
   const messageId = uuidv7();
-  const text = '조건에 맞는 상품을 찾았어요.';
+  const deltas = ['조건에 맞는 ', '상품 다섯 개를 ', '찾았어요.'];
+  const text = deltas.join('');
   yield {
     type: EventType.TOOL_CALL_RESULT,
     messageId,
     toolCallId: 'integration-search',
-    content: JSON.stringify({ rankingPolicy: 'neutral-v1' }),
+    content: JSON.stringify(toAiProductResult(search.items)),
   };
   yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' };
-  yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: text };
+  for (const delta of deltas) {
+    yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta };
+  }
   yield { type: EventType.TEXT_MESSAGE_END, messageId };
   await lifecycle.onComplete({
     messageId,
     text,
-    productRecommendations: search.items.slice(0, 1).map(({ id }) => ({
+    productRecommendations: search.items.map(({ id }) => ({
       productId: id,
       aiSummary: '통합 테스트 추천 상품',
     })),
