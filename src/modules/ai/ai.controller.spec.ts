@@ -26,8 +26,10 @@ const fixture = (
   const ai = {
     assertOwnedRun: jest.fn(() => Promise.resolve()),
   } as unknown as AiService;
-  const query = jest.fn<Query>(() =>
-    Promise.reject(new Error('database reached')),
+  const query = jest.fn<Query>((text) =>
+    text.includes("interval '1 hour'")
+      ? Promise.resolve({ rows: [{ expired: false }] })
+      : Promise.reject(new Error('database reached')),
   );
   const pool = { query } as unknown as Pool;
   const request = {

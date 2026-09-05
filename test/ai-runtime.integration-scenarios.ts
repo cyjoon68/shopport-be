@@ -163,6 +163,95 @@ export const registerAiRuntimeScenarios = (
     }
   });
 
+  it('rejects replay after the run retention boundary before streaming', async () => {
+    const { baseUrl, createAiOwner, pool } = getFixture();
+    const owner = await createAiOwner();
+    const expiredStartedAt = new Date(Date.now() - 3_700_000);
+    const recentStartedAt = new Date();
+    const futureExpiry = new Date(Date.now() + 3_600_000);
+    const pastExpiry = new Date(Date.now() - 60_000);
+    const expiredWithEvents = uuidv7();
+    const expiredWithoutEvents = uuidv7();
+    const expiredWithPartialEvents = uuidv7();
+    const recentRun = uuidv7();
+    for (const [runId, startedAt] of [
+      [expiredWithEvents, expiredStartedAt],
+      [expiredWithoutEvents, expiredStartedAt],
+      [expiredWithPartialEvents, expiredStartedAt],
+      [recentRun, recentStartedAt],
+    ] as const) {
+      await pool.query(
+        `insert into ai_runs
+         (id, account_id, conversation_id, status, started_at, deadline_at,
+          heartbeat_at, completed_at, stream_closed_at)
+         values ($1, $2, $3, 'completed', $4, $4, $4, $4, $4)`,
+        [runId, owner.accountId, owner.conversationId, startedAt],
+      );
+    }
+    const terminal = {
+      type: EventType.RUN_FINISHED,
+      threadId: owner.conversationId,
+      finishReason: 'stop',
+    };
+    await pool.query(
+      `insert into ai_run_events (run_id, chunk, expires_at)
+       values ($1, $2, $5),
+              ($3, $2, $6),
+              ($3, $4, $5),
+              ($7, $4, $5)`,
+      [
+        expiredWithEvents,
+        JSON.stringify({ type: EventType.CUSTOM, name: 'retained', value: {} }),
+        expiredWithPartialEvents,
+        JSON.stringify(terminal),
+        futureExpiry,
+        pastExpiry,
+        recentRun,
+      ],
+    );
+
+    for (const runId of [
+      expiredWithEvents,
+      expiredWithoutEvents,
+      expiredWithPartialEvents,
+    ]) {
+      await request(baseUrl)
+        .get('/v1/ai/chat')
+        .query({ runId, offset: '-1' })
+        .set('authorization', `Bearer ${owner.accessToken}`)
+        .expect(410)
+        .expect(({ body }) => {
+          expect(body).toEqual(
+            expect.objectContaining({ message: 'Run replay expired' }),
+          );
+        });
+    }
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .set('last-event-id', '0')
+      .send({
+        threadId: owner.conversationId,
+        runId: expiredWithEvents,
+        messages: [{ id: uuidv7(), role: 'user', content: 'resume request' }],
+        forwardedProps: {},
+      })
+      .expect(410)
+      .expect(({ body }) => {
+        expect(body).toEqual(
+          expect.objectContaining({ message: 'Run replay expired' }),
+        );
+      });
+    await request(baseUrl)
+      .get('/v1/ai/chat')
+      .query({ runId: recentRun, offset: '-1' })
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .expect(200)
+      .expect(({ text }) => {
+        expect(text).toContain(EventType.RUN_FINISHED);
+      });
+  });
+
   it('closes and replays a pre-producer failure promptly', async () => {
     const { baseUrl, createAiOwner, pool } = getFixture();
     const owner = await createAiOwner();
