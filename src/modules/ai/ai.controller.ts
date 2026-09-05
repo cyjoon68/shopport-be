@@ -141,8 +141,9 @@ export class AiController {
       throw new BadRequestException('Invalid replay request');
     const storageRunId = storageRunIdFor(parsed.data.runId);
     await this.ai.assertOwnedRun(viewerIdFrom(request), storageRunId);
+    const headerOffset = request.header('last-event-id');
     const offset = replayOffsetFrom(
-      request.header('last-event-id') ?? parsed.data.offset,
+      headerOffset ?? (parsed.data.offset === '-1' ? '0' : parsed.data.offset),
     );
     const durability = new PostgresStreamDurability(
       this.pool,
