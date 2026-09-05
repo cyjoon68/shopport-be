@@ -95,7 +95,7 @@ export class PostgresStreamDurability implements StreamDurability {
               `select id::text, chunk
                from ai_run_events
                where run_id = $1 and id > $2 and expires_at > now()
-               order by id
+               order by ai_run_events.id
                limit $3`,
               [this.runId, cursor.toString(), readPageSize],
             );
@@ -133,7 +133,7 @@ export class PostgresStreamDurability implements StreamDurability {
       `select id::text, chunk
        from ai_run_events
        where run_id = $1 and expires_at > now()
-       order by id`,
+       order by ai_run_events.id`,
       [this.runId],
     );
     return result.rows.map((row) => {

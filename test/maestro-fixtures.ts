@@ -89,12 +89,26 @@ const createMaestroStream = async function* (
     providerId: 'daiso',
   });
   const messageId = uuidv7();
+  const toolCallId = 'integration-search';
   const deltas = ['조건에 맞는 ', '상품 다섯 개를 ', '찾았어요.'];
   const text = deltas.join('');
   yield {
+    type: EventType.TOOL_CALL_START,
+    toolCallId,
+    toolCallName: 'searchProducts',
+    toolName: 'searchProducts',
+    parentMessageId: messageId,
+  };
+  yield {
+    type: EventType.TOOL_CALL_ARGS,
+    toolCallId,
+    delta: JSON.stringify({ query: input.text, providerId: 'daiso' }),
+  };
+  yield { type: EventType.TOOL_CALL_END, toolCallId };
+  yield {
     type: EventType.TOOL_CALL_RESULT,
     messageId,
-    toolCallId: 'integration-search',
+    toolCallId,
     content: JSON.stringify(toAiProductResult(search.items)),
   };
   yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' };
