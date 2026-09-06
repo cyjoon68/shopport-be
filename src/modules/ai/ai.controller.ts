@@ -5,6 +5,7 @@ import {
   Body,
   Controller,
   Get,
+  GoneException,
   HttpCode,
   Inject,
   Post,
@@ -47,6 +48,19 @@ const replayOffsetFrom = (offset: string): string => {
   const parsed = parseExternalReplayOffset(offset);
   if (parsed === null) throw new BadRequestException('Invalid replay request');
   return parsed;
+};
+
+const assertReplayAvailable = async (
+  pool: Pool,
+  runId: string,
+): Promise<void> => {
+  const replay = await pool.query<{ expired: boolean }>(
+    `select started_at + interval '1 hour' <= now() as expired
+     from ai_runs
+     where id = $1`,
+    [runId],
+  );
+  if (replay.rows.at(0)?.expired) throw new GoneException('Run replay expired');
 };
 
 const pipeResponse = async (
@@ -106,6 +120,8 @@ export class AiController {
       }
       const offset =
         requestedOffset === null ? null : replayOffsetFrom(requestedOffset);
+      if (offset !== null)
+        await assertReplayAvailable(this.pool, reference.storageRunId);
       const durability = new PostgresStreamDurability(
         this.pool,
         reference.storageRunId,
@@ -141,9 +157,11 @@ export class AiController {
       throw new BadRequestException('Invalid replay request');
     const storageRunId = storageRunIdFor(parsed.data.runId);
     await this.ai.assertOwnedRun(viewerIdFrom(request), storageRunId);
+    const headerOffset = request.header('last-event-id');
     const offset = replayOffsetFrom(
-      request.header('last-event-id') ?? parsed.data.offset,
+      headerOffset ?? (parsed.data.offset === '-1' ? '0' : parsed.data.offset),
     );
+    await assertReplayAvailable(this.pool, storageRunId);
     const durability = new PostgresStreamDurability(
       this.pool,
       storageRunId,

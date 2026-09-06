@@ -1,4 +1,5 @@
 import { expect, it } from '@jest/globals';
+import { EventType } from '@tanstack/ai';
 import type { Pool } from 'pg';
 import request from 'supertest';
 import { v7 as uuidv7 } from 'uuid';
@@ -56,6 +57,55 @@ const waitForBlockedRunUpdates = async (
 export const registerAiRuntimeScenarios = (
   getFixture: () => AiRuntimeFixture,
 ): void => {
+  it('replays the first event for the GET initial offset sentinel', async () => {
+    const { baseUrl, createAiOwner, pool } = getFixture();
+    const owner = await createAiOwner();
+    const runId = uuidv7();
+    const now = new Date();
+    await pool.query(
+      `insert into ai_runs
+       (id, account_id, conversation_id, status, started_at, deadline_at,
+        heartbeat_at, completed_at, stream_closed_at)
+       values ($1, $2, $3, 'completed', $4, $4, $4, $4, $4)`,
+      [runId, owner.accountId, owner.conversationId, now],
+    );
+    const chunks = [
+      {
+        type: EventType.CUSTOM,
+        name: 'initial-event',
+        value: { sequence: 1 },
+      },
+      {
+        type: EventType.RUN_FINISHED,
+        threadId: owner.conversationId,
+        runId,
+        finishReason: 'stop',
+      },
+    ];
+    const inserted = await pool.query<{ id: string }>(
+      `insert into ai_run_events (run_id, chunk)
+       select $1, chunk
+       from jsonb_array_elements($2::jsonb) as chunk
+       returning id::text`,
+      [runId, JSON.stringify(chunks)],
+    );
+    const response = await request(baseUrl)
+      .get('/v1/ai/chat')
+      .query({ runId, offset: '-1' })
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    const replayed = response.text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as unknown);
+
+    expect(BigInt(inserted.rows.at(0)?.id ?? '0')).toBeGreaterThan(0n);
+    expect(replayed).toEqual([
+      { id: inserted.rows.at(0)?.id, chunk: chunks[0] },
+      { id: inserted.rows.at(1)?.id, chunk: chunks[1] },
+    ]);
+  });
+
   it('rejects invalid external replay offsets for GET and POST', async () => {
     const { baseUrl, createAiOwner, pool } = getFixture();
     const owner = await createAiOwner();
@@ -69,10 +119,24 @@ export const registerAiRuntimeScenarios = (
       [runId, owner.accountId, owner.conversationId, now],
     );
 
-    for (const offset of ['-1', '42-0', '+1', '1.5', '9223372036854775808']) {
+    const invalidOffsets = ['-2', '42-0', '+1', '1.5', '9223372036854775808'];
+    for (const offset of invalidOffsets) {
       await request(baseUrl)
         .get('/v1/ai/chat')
         .query({ runId, offset })
+        .set('authorization', `Bearer ${owner.accessToken}`)
+        .expect(400)
+        .expect(({ body }) => {
+          expect(body).toEqual(
+            expect.objectContaining({ message: 'Invalid replay request' }),
+          );
+        });
+    }
+    for (const offset of ['-1', ...invalidOffsets]) {
+      await request(baseUrl)
+        .get('/v1/ai/chat')
+        .query({ runId, offset: '0' })
+        .set('last-event-id', offset)
         .set('authorization', `Bearer ${owner.accessToken}`)
         .expect(400)
         .expect(({ body }) => {
@@ -97,6 +161,95 @@ export const registerAiRuntimeScenarios = (
           );
         });
     }
+  });
+
+  it('rejects replay after the run retention boundary before streaming', async () => {
+    const { baseUrl, createAiOwner, pool } = getFixture();
+    const owner = await createAiOwner();
+    const expiredStartedAt = new Date(Date.now() - 3_700_000);
+    const recentStartedAt = new Date();
+    const futureExpiry = new Date(Date.now() + 3_600_000);
+    const pastExpiry = new Date(Date.now() - 60_000);
+    const expiredWithEvents = uuidv7();
+    const expiredWithoutEvents = uuidv7();
+    const expiredWithPartialEvents = uuidv7();
+    const recentRun = uuidv7();
+    for (const [runId, startedAt] of [
+      [expiredWithEvents, expiredStartedAt],
+      [expiredWithoutEvents, expiredStartedAt],
+      [expiredWithPartialEvents, expiredStartedAt],
+      [recentRun, recentStartedAt],
+    ] as const) {
+      await pool.query(
+        `insert into ai_runs
+         (id, account_id, conversation_id, status, started_at, deadline_at,
+          heartbeat_at, completed_at, stream_closed_at)
+         values ($1, $2, $3, 'completed', $4, $4, $4, $4, $4)`,
+        [runId, owner.accountId, owner.conversationId, startedAt],
+      );
+    }
+    const terminal = {
+      type: EventType.RUN_FINISHED,
+      threadId: owner.conversationId,
+      finishReason: 'stop',
+    };
+    await pool.query(
+      `insert into ai_run_events (run_id, chunk, expires_at)
+       values ($1, $2, $5),
+              ($3, $2, $6),
+              ($3, $4, $5),
+              ($7, $4, $5)`,
+      [
+        expiredWithEvents,
+        JSON.stringify({ type: EventType.CUSTOM, name: 'retained', value: {} }),
+        expiredWithPartialEvents,
+        JSON.stringify(terminal),
+        futureExpiry,
+        pastExpiry,
+        recentRun,
+      ],
+    );
+
+    for (const runId of [
+      expiredWithEvents,
+      expiredWithoutEvents,
+      expiredWithPartialEvents,
+    ]) {
+      await request(baseUrl)
+        .get('/v1/ai/chat')
+        .query({ runId, offset: '-1' })
+        .set('authorization', `Bearer ${owner.accessToken}`)
+        .expect(410)
+        .expect(({ body }) => {
+          expect(body).toEqual(
+            expect.objectContaining({ message: 'Run replay expired' }),
+          );
+        });
+    }
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .set('last-event-id', '0')
+      .send({
+        threadId: owner.conversationId,
+        runId: expiredWithEvents,
+        messages: [{ id: uuidv7(), role: 'user', content: 'resume request' }],
+        forwardedProps: {},
+      })
+      .expect(410)
+      .expect(({ body }) => {
+        expect(body).toEqual(
+          expect.objectContaining({ message: 'Run replay expired' }),
+        );
+      });
+    await request(baseUrl)
+      .get('/v1/ai/chat')
+      .query({ runId: recentRun, offset: '-1' })
+      .set('authorization', `Bearer ${owner.accessToken}`)
+      .expect(200)
+      .expect(({ text }) => {
+        expect(text).toContain(EventType.RUN_FINISHED);
+      });
   });
 
   it('closes and replays a pre-producer failure promptly', async () => {

@@ -707,9 +707,24 @@ describe('Shopport API vertical flow', () => {
       .set('authorization', `Bearer ${secondLogin.accessToken}`)
       .expect(404);
     await request(baseUrl)
+      .get(`/v1/ai/chat?runId=${completedRunId}&offset=-1`)
+      .set('authorization', `Bearer ${secondLogin.accessToken}`)
+      .expect(404);
+    await request(baseUrl)
       .post('/v1/ai/chat')
       .set('authorization', `Bearer ${secondLogin.accessToken}`)
       .set('last-event-id', '0-0')
+      .send({
+        threadId: conversationId,
+        runId: completedRunId,
+        messages: [{ id: uuidv7(), role: 'user', content: 'resume' }],
+        forwardedProps: {},
+      })
+      .expect(404);
+    await request(baseUrl)
+      .post('/v1/ai/chat')
+      .set('authorization', `Bearer ${secondLogin.accessToken}`)
+      .set('last-event-id', '0')
       .send({
         threadId: conversationId,
         runId: completedRunId,
